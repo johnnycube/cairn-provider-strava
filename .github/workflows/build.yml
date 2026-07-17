@@ -1,0 +1,111 @@
+name: Build & push strava-worker image
+
+# Builds the Cairn Strava worker image (Dockerfile) with BuildKit and, on a
+# successful build, pushes it to the GitHub Container Registry tagged by git tag
+# and commit hash.
+#
+# Registry: ghcr.io/johnnycube/cairn-provider-strava
+# Auth: the built-in GITHUB_TOKEN (packages: write) — no extra secret needed.
+#
+# The Go proto stubs it imports (proto/) are committed, so there is no buf /
+# proto-generation step. CI runs inside the shared cairn-build-base toolchain
+# image (pinned Go 1.26, matching cairn-core) — for the test job and as the
+# Dockerfile build stage (BUILD_BASE). The image is overridable so the worker
+# can still be built with zero dependency on the core toolchain. It is pulled
+# from the PUBLIC ghcr.io/johnnycube/cairn-build-base:1 package.
+#
+# Triggers:
+#   - push to the default branch  → publishes  sha-<short>  (+ latest)
+#   - push of a v* git tag        → publishes  <tag>  + sha-<short>
+#   - pull_request                → builds only (no push), as a gate
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: build-worker-strava-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/johnnycube/cairn-provider-strava
+  BUILD_BASE: ghcr.io/johnnycube/cairn-build-base:1
+
+jobs:
+  # Gate: the worker must build, vet, and test cleanly. Runs inside the shared
+  # build-base toolchain image (Go already on PATH) — no setup-go step.
+  test:
+    name: Worker checks
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/johnnycube/cairn-build-base:1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # Cache Go module + build caches (setup-go isn't used inside the container).
+      - name: Cache Go
+        uses: actions/cache@v4
+        with:
+          path: |
+            /go/pkg/mod
+            /root/.cache/go-build
+          key: go-strava-${{ hashFiles('go.sum') }}
+          restore-keys: go-strava-
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
+  build-push:
+    name: Build & push cairn-provider-strava
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute tags & labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Login only matters for the push (the build stage pulls the PUBLIC
+      # build-base without credentials), so it's gated the same way.
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push (BuildKit)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          # Publish only from main or a v* release tag; PRs/feature branches
+          # build as a gate but never push to the registry.
+          push: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_BASE=${{ env.BUILD_BASE }}
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}

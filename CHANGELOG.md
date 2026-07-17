@@ -1,0 +1,34 @@
+# Changelog
+
+All notable changes to the Cairn Strava worker are documented here. The format
+follows [Keep a Changelog](https://keepachangelog.com/), and the project aims
+to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
+
+## [0.2.0] — 2026-07-16
+
+**First public release.** A standalone Go worker that imports Strava
+activities into [Cairn](https://github.com/johnnycube/cairn-core) — read-only, no
+write-back.
+
+### Added
+- Full activity import: activities with streams, laps, segment efforts,
+  segment definitions, gear, and provider-reported personal bests.
+- Cairn NATS control plane: enrollment-token registration, durable consumers
+  for `fetch_source` / `parse_blob` / `backfill` / `reconcile` jobs, a
+  `discover` request/reply endpoint, capability-manifest heartbeats to the
+  worker-presence KV.
+- Claim-checked results: event payloads upload to the blob store via presigned
+  PUT and publish as small envelopes; terminal failures publish a fail-fast
+  failure envelope with the true reason.
+- Strava rate-limit handling driven by authoritative usage headers, with a
+  reserved daily budget so reconcile can't starve user-driven imports.
+- Webhook support and blob re-parse (`parse_blob`) so stored raw responses can
+  be re-imported without spending API quota.
+- No Go-code dependency on cairn-core: the shared contract is the committed
+  proto stubs under `proto/` plus the NATS subjects.
+
+## [0.1.0] — 2026-06-26
+
+Initial development (internal pre-release iterations v0.1.0–v0.1.5).
+
+[0.2.0]: https://github.com/johnnycube/cairn-provider-strava/releases/tag/v0.2.0

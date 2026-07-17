@@ -1,0 +1,26 @@
+/worker-strava
+/out/
+*.test
+*.out
+.idea/
+.vscode/
+
+# --- Secrets & local config ---
+.env
+.env.*
+!.env.example
+
+# --- AI assistant local files (never commit) ---
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.aider*
+.codex/
+.gemini/
+GEMINI.md
+.github/copilot-instructions.md
