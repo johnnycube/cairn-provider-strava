@@ -491,10 +491,18 @@ const (
 	kvWorkerManifests = "cairn_worker_manifests"
 )
 
+// manifestRepublishInterval re-publishes the manifest well within the
+// manifests-bucket TTL so a live worker's manifest never expires, while a
+// decommissioned worker's does. Slower than the heartbeat: the manifest is
+// near-static and every write re-triggers the server's update-available scan.
+const manifestRepublishInterval = 5 * time.Minute
+
 func (w *Worker) heartbeatLoop(ctx context.Context) {
 	defer w.wg.Done()
 	ticker := time.NewTicker(w.cfg.HeartbeatInterval)
 	defer ticker.Stop()
+	manifestTicker := time.NewTicker(manifestRepublishInterval)
+	defer manifestTicker.Stop()
 
 	for {
 		select {
@@ -505,6 +513,10 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 		case <-ticker.C:
 			if err := w.publishHeartbeat(ctx); err != nil {
 				w.logger.Debug("heartbeat publish failed", "error", err)
+			}
+		case <-manifestTicker.C:
+			if err := w.publishManifest(ctx); err != nil {
+				w.logger.Debug("manifest republish failed", "error", err)
 			}
 		}
 	}
