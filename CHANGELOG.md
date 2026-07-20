@@ -4,6 +4,14 @@ All notable changes to the Cairn Strava worker are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.2.1] — 2026-07-20
+
+### Changed
+- The worker re-publishes its manifest to `cairn_worker_manifests` every 5
+  minutes (previously only at startup), keeping it fresh within the manifest
+  bucket's new TTL so a live worker's manifest is never expired or reaped.
+  Requires cairn-core ≥ v0.2.1.
+
 ## [0.2.0] — 2026-07-16
 
 **First public release.** A standalone Go worker that imports Strava
@@ -31,4 +39,5 @@ write-back.
 
 Initial development (internal pre-release iterations v0.1.0–v0.1.5).
 
+[0.2.1]: https://github.com/johnnycube/cairn-provider-strava/releases/tag/v0.2.1
 [0.2.0]: https://github.com/johnnycube/cairn-provider-strava/releases/tag/v0.2.0
