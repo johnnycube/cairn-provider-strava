@@ -7,6 +7,15 @@ name: Build & push strava-worker image
 # Registry: ghcr.io/johnnycube/cairn-provider-strava
 # Auth: the built-in GITHUB_TOKEN (packages: write) — no extra secret needed.
 #
+# Supply chain: pushed images carry BuildKit SLSA provenance + SBOM
+# attestations, are signed keyless with cosign (Fulcio cert bound to this
+# workflow's OIDC identity, logged in Rekor), and get a GitHub provenance
+# attestation (verifiable via `gh attestation verify`). Verify with:
+#   cosign verify ghcr.io/johnnycube/cairn-provider-strava:<tag> \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --certificate-identity-regexp \
+#       '^https://github.com/johnnycube/cairn-provider-strava/\.github/workflows/build\.yml@.*'
+#
 # The Go proto stubs it imports (proto/) are committed, so there is no buf /
 # proto-generation step. CI runs inside the shared cairn-build-base toolchain
 # image (pinned Go 1.26, matching cairn-core) — for the test job and as the
@@ -73,6 +82,14 @@ jobs:
     name: Build & push cairn-provider-strava
     runs-on: ubuntu-latest
     needs: test
+    # id-token/attestations only here — the test job stays unprivileged. This
+    # job also runs on PRs (build-only gate); the sign/attest steps are gated
+    # off there, and fork PRs get no OIDC token anyway.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,6 +118,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push (BuildKit)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -110,6 +128,31 @@ jobs:
           push: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # BuildKit-level SLSA provenance + SBOM, attached to the image index.
+          provenance: mode=max
+          sbom: true
           build-args: |
             BUILD_BASE=${{ env.BUILD_BASE }}
             VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+
+      # Keyless sigstore signing — one signature on the pushed digest covers
+      # every tag of this push. Gated like `push:` so it never runs unpushed.
+      - name: Install cosign
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign image (keyless)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          COSIGN_YES: "true"
+        run: cosign sign "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+
+      # GitHub-native provenance attestation (Attestations tab, `gh attestation
+      # verify`), stored alongside the image in ghcr.
+      - name: Attest build provenance
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
