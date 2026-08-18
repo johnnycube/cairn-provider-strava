@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/nats-io/nkeys v0.4.16
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
