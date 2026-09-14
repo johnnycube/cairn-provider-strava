@@ -16,7 +16,7 @@ import (
 // NATS KV bucket. Each bucket key holds a JSON-encoded rateLimitState;
 // concurrent updates are arbitrated by JetStream KV's CAS semantics.
 //
-// Design rationale (see also docs/architecture.md §6.3):
+// Design rationale (see also cairn-core docs/architecture.md §6.3):
 //
 //   - Workers Reserve BEFORE every external API call. The Reserve call
 //     is async-safe via CompareAndSet; on lost CAS the caller retries.
@@ -44,8 +44,8 @@ type RateLimiter struct {
 }
 
 // NewRateLimiter constructs a rate limiter on top of an existing KV
-// bucket handle (typically the cairn_rate_limits bucket bootstrapped
-// by Bus.BootstrapStreams).
+// bucket handle (typically the cairn_rate_limits bucket the cairn-core
+// server bootstraps).
 //
 // `capacities` maps bucket-name → capacity. The adapter has NO built-in
 // per-provider knowledge — workers configure their own. Bucket-name
@@ -275,33 +275,6 @@ func (r *RateLimiter) SyncUsage(
 		return fmt.Errorf("sync-usage: kv put %s: %w", bucket, err)
 	}
 	return nil
-}
-
-// Snapshot returns the current bucket state for operator visibility.
-// Approximate under concurrent updates — Snapshot does not lock.
-func (r *RateLimiter) Snapshot(
-	ctx context.Context,
-	bucket string,
-) (port.BucketSnapshot, error) {
-	state, _, err := r.readState(ctx, bucket)
-	if err != nil {
-		return port.BucketSnapshot{}, err
-	}
-	capacity := state.Capacity
-	if capacity == 0 {
-		capacity = r.capacities[bucket]
-	}
-	available := capacity - state.Used
-	if available < 0 {
-		available = 0
-	}
-	return port.BucketSnapshot{
-		Bucket:          bucket,
-		Available:       available,
-		Capacity:        capacity,
-		WindowResetsAt:  state.WindowResetAt,
-		LastReservation: state.WindowStart,
-	}, nil
 }
 
 // ---------------------------------------------------------------------------

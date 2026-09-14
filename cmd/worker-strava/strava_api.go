@@ -131,14 +131,11 @@ type stravaActivity struct {
 	Type                 string  `json:"type"`       // legacy enum
 	SportType            string  `json:"sport_type"` // newer; preferred when present
 	StartDate            string  `json:"start_date"`
-	StartDateLocal       string  `json:"start_date_local"`
 	Timezone             string  `json:"timezone"`
 	ElapsedTime          int     `json:"elapsed_time"`
 	MovingTime           int     `json:"moving_time"`
 	Distance             float64 `json:"distance"`
 	TotalElevationGain   float64 `json:"total_elevation_gain"`
-	ElevHigh             float64 `json:"elev_high"`
-	ElevLow              float64 `json:"elev_low"`
 	AverageSpeed         float64 `json:"average_speed"`
 	MaxSpeed             float64 `json:"max_speed"`
 	AverageHeartrate     float64 `json:"average_heartrate"`
@@ -151,13 +148,8 @@ type stravaActivity struct {
 	AverageTemp          float64 `json:"average_temp"`
 	Calories             float64 `json:"calories"`
 	Kilojoules           float64 `json:"kilojoules"`
-	Trainer              bool    `json:"trainer"`
 	Commute              bool    `json:"commute"`
-	Manual               bool    `json:"manual"`
 	WorkoutType          *int    `json:"workout_type"`
-	GearID               string  `json:"gear_id"`
-	DeviceName           string  `json:"device_name"`
-	HasKudoed            bool    `json:"has_kudoed"`
 	Athlete              struct {
 		ID int64 `json:"id"`
 	} `json:"athlete"`
@@ -168,7 +160,6 @@ type stravaActivity struct {
 			UniqueID string            `json:"unique_id"`
 			Urls     map[string]string `json:"urls"` // size (px, as string) → URL
 		} `json:"primary"`
-		Count int `json:"count"`
 	} `json:"photos"`
 }
 
@@ -215,8 +206,6 @@ type stravaSegmentSummary struct {
 	Distance      float64 `json:"distance"`
 	AverageGrade  float64 `json:"average_grade"`
 	MaximumGrade  float64 `json:"maximum_grade"`
-	ElevationHigh float64 `json:"elevation_high"`
-	ElevationLow  float64 `json:"elevation_low"`
 	ClimbCategory int     `json:"climb_category"`
 	Starred       bool    `json:"starred"`
 }
@@ -235,11 +224,8 @@ type stravaDetailedSegment struct {
 // key_by_type=true layout returns a JSON object keyed by channel name,
 // each value an object with `data` carrying the array.
 type stravaStream struct {
-	Type         string          `json:"type"`
-	Data         json.RawMessage `json:"data"`
-	SeriesType   string          `json:"series_type"`
-	OriginalSize int             `json:"original_size"`
-	Resolution   string          `json:"resolution"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 // stravaStreamsResponse is the shape of `key_by_type=true`.

@@ -8,8 +8,8 @@ import (
 // RateLimiter is the bucket-based reservation interface workers use
 // before every external API call. Implementations live in the
 // adapter layer; the canonical Cairn implementation is NATS-KV-backed
-// (see docs/architecture.md §6) so multiple worker instances of the
-// same provider share one global counter.
+// (see cairn-core docs/architecture.md §6) so multiple worker instances
+// of the same provider share one global counter.
 //
 // Buckets are namespaced strings. Convention:
 //
@@ -42,17 +42,4 @@ type RateLimiter interface {
 	// the locally-guessed capacity and counter. Called after API responses
 	// that carry usage headers; windowResetsAt anchors the current window.
 	SyncUsage(ctx context.Context, bucket string, used, limit int, windowResetsAt time.Time) error
-
-	// Snapshot returns the current bucket state for operator visibility.
-	// Implementations may return an approximation under high concurrency
-	// — this is not part of the reservation hot path.
-	Snapshot(ctx context.Context, bucket string) (BucketSnapshot, error)
-}
-
-type BucketSnapshot struct {
-	Bucket          string
-	Available       int
-	Capacity        int
-	WindowResetsAt  time.Time
-	LastReservation time.Time
 }

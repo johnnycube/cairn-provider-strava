@@ -47,11 +47,11 @@ func loadConfig() (workerConfig, error) {
 		LogLevel:        slog.LevelInfo,
 	}
 	// An enrollment token is the production path (NATS auth-callout mints a
-	// scoped user-JWT — see docs/architecture.md §4.5). For local/dev stacks
-	// where NATS runs without auth-callout configured, the token may be
-	// omitted: the worker then connects anonymously or with static
-	// user/password creds (CAIRN_NATS_USER / CAIRN_NATS_PASSWORD). This is
-	// the only difference between dev and prod worker bring-up.
+	// scoped user-JWT — see cairn-core docs/architecture.md §4.5). For
+	// local/dev stacks where NATS runs without auth-callout configured, the
+	// token may be omitted: the worker then connects anonymously or with
+	// static user/password creds (CAIRN_NATS_USER / CAIRN_NATS_PASSWORD).
+	// This is the only difference between dev and prod worker bring-up.
 	return cfg, nil
 }
 
@@ -144,8 +144,8 @@ func connectBus(cfg workerConfig, logger *slog.Logger) (busHandle, error) {
 		return busHandle{}, fmt.Errorf("nats connect: %w", err)
 	}
 
-	// Wrap the connection in our Bus adapter. NewBusFromConn does NOT
-	// trigger stream bootstrap — workers don't declare streams.
+	// Wrap the connection in our Bus adapter. Workers don't declare
+	// streams; the server does.
 	bus, err := natsadapter.NewBusFromConn(nc, cfg.WorkerName+":"+cfg.InstanceID, logger)
 	if err != nil {
 		nc.Close()
@@ -818,7 +818,7 @@ func makeBackfillHandler(cfg workerConfig, client *stravaClient) func(context.Co
 }
 
 // ---------------------------------------------------------------------------
-// reconcile.strava: drift-safety + polling sync (see architecture.md §6.4)
+// reconcile.strava: drift-safety + polling sync (see cairn-core docs/architecture.md §6.4)
 // ---------------------------------------------------------------------------
 
 type reconcileJob struct {

@@ -261,10 +261,6 @@ func (s *stubLimiter) SyncUsage(_ context.Context, _ string, _, _ int, _ time.Ti
 	return nil
 }
 
-func (s *stubLimiter) Snapshot(_ context.Context, bucket string) (port.BucketSnapshot, error) {
-	return port.BucketSnapshot{Bucket: bucket}, nil
-}
-
 func TestReserveAPI_Allow(t *testing.T) {
 	bus := inmem.New()
 	limiter := &stubLimiter{Allow: true}

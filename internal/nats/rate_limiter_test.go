@@ -128,37 +128,6 @@ func TestForceRefill_OverridesAvailableImmediately(t *testing.T) {
 	}
 }
 
-func TestSnapshot_ReportsState(t *testing.T) {
-	rl := newTestLimiter(t, map[string]int{"strava:short": 200})
-	ctx := context.Background()
-
-	// New bucket: empty state.
-	snap, err := rl.Snapshot(ctx, "strava:short")
-	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
-	if snap.Bucket != "strava:short" {
-		t.Errorf("bucket = %q", snap.Bucket)
-	}
-
-	// After 7 reservations, Available should reflect them.
-	for i := 0; i < 7; i++ {
-		if _, _, err := rl.Reserve(ctx, "strava:short", 1); err != nil {
-			t.Fatalf("Reserve %d: %v", i, err)
-		}
-	}
-	snap, err = rl.Snapshot(ctx, "strava:short")
-	if err != nil {
-		t.Fatalf("Snapshot post-reserve: %v", err)
-	}
-	if snap.Capacity != 200 {
-		t.Errorf("capacity = %d, want 200", snap.Capacity)
-	}
-	if snap.Available != 193 {
-		t.Errorf("available = %d, want 193 (200 - 7)", snap.Available)
-	}
-}
-
 func TestReserve_CASContention_Recovers(t *testing.T) {
 	// Spin up N concurrent goroutines that all try to drain the bucket.
 	// Exactly `capacity` of them should win; the rest get denied. Tests

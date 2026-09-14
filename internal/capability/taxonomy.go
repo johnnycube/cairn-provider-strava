@@ -34,76 +34,26 @@ const (
 	DataTypeAthleteProfile DataType = "AthleteProfile"
 )
 
-// Category groups data types for display and routing.
-type Category string
-
-const (
-	CategoryActivity   Category = "activity"
-	CategoryTimeSeries Category = "timeseries"
-	CategoryStatic     Category = "static"
-)
-
-// TypeSpec is the registry metadata for a data type: a human label and the
-// category it belongs to.
-type TypeSpec struct {
-	Type     DataType
-	Label    string
-	Category Category
-}
-
-// registry is the closed set of known data types in a stable display order.
-var registry = []TypeSpec{
-	{DataTypeActivity, "Activity", CategoryActivity},
-	{DataTypeLap, "Laps", CategoryActivity},
-	{DataTypeSegmentEffort, "Segment Effort", CategoryActivity},
-	{DataTypePersonalBest, "Personal Best", CategoryActivity},
-
-	{DataTypeSteps, "Steps", CategoryTimeSeries},
-	{DataTypeHRV, "HRV", CategoryTimeSeries},
-	{DataTypeRestingHR, "Resting HR", CategoryTimeSeries},
-	{DataTypeSleep, "Sleep", CategoryTimeSeries},
-	{DataTypeWeight, "Weight", CategoryTimeSeries},
-	{DataTypeWaterIntake, "Water Intake", CategoryTimeSeries},
-
-	{DataTypeSegment, "Segment", CategoryStatic},
-	{DataTypeGear, "Gear", CategoryStatic},
-	{DataTypeAthleteProfile, "Athlete Profile", CategoryStatic},
-}
-
-// byType indexes the registry for O(1) validity/label lookups.
-var byType = func() map[DataType]TypeSpec {
-	m := make(map[DataType]TypeSpec, len(registry))
-	for _, s := range registry {
-		m[s.Type] = s
-	}
-	return m
-}()
-
-// AllTypes returns the canonical data types in display order.
-func AllTypes() []TypeSpec {
-	out := make([]TypeSpec, len(registry))
-	copy(out, registry)
-	return out
+// known is the closed set of data types the core understands. The worker only
+// needs membership; labels and categories live in cairn-core.
+var known = map[DataType]struct{}{
+	DataTypeActivity:       {},
+	DataTypeLap:            {},
+	DataTypeSegmentEffort:  {},
+	DataTypePersonalBest:   {},
+	DataTypeSteps:          {},
+	DataTypeHRV:            {},
+	DataTypeRestingHR:      {},
+	DataTypeSleep:          {},
+	DataTypeWeight:         {},
+	DataTypeWaterIntake:    {},
+	DataTypeSegment:        {},
+	DataTypeGear:           {},
+	DataTypeAthleteProfile: {},
 }
 
 // Valid reports whether dt is a known canonical data type.
 func (dt DataType) Valid() bool {
-	_, ok := byType[dt]
+	_, ok := known[dt]
 	return ok
-}
-
-// Label returns the human label for dt, or the raw identifier if unknown.
-func (dt DataType) Label() string {
-	if s, ok := byType[dt]; ok {
-		return s.Label
-	}
-	return string(dt)
-}
-
-// CategoryOf returns dt's category, or "" if unknown.
-func (dt DataType) CategoryOf() Category {
-	if s, ok := byType[dt]; ok {
-		return s.Category
-	}
-	return ""
 }

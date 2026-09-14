@@ -1,25 +1,21 @@
-// Package nats provides the NATS+JetStream implementations of
-// port.JobBus, port.RateLimiter, and port.NATSCredentialIssuer, plus
-// the auth-callout subscriber that drives port.WorkerEnrollmentRepo via
-// the enrollment use cases.
+// Package nats provides the NATS+JetStream implementations of port.JobBus
+// (pull consumers, publish, request/reply, KV handles) and port.RateLimiter
+// that the worker runs on.
 //
-// Imports of nats.go are confined to this package — domain and port
-// stay free of nats.* types. The Bus is the only object the rest of
-// the binary sees; everything else is reached through port interfaces.
+// Imports of nats.go are confined to this package — port stays free of
+// nats.* types. The Bus is the only object the rest of the binary sees;
+// everything else is reached through port interfaces.
 //
-// See docs/architecture.md §1–§5 for the design behind subject layout,
-// stream configs, KV buckets, delivery semantics, and the JobBus
+// See cairn-core docs/architecture.md §1–§5 for the design behind subject
+// layout, stream configs, KV buckets, delivery semantics, and the JobBus
 // interface this file implements.
 package nats
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -35,10 +31,9 @@ import (
 //
 // Lifecycle:
 //
-//	bus, err := nats.NewBus(ctx, cfg.NATS, logger)
+//	bus, err := nats.NewBusFromConn(nc, clientName, logger)
 //	defer bus.Close()
-//	bus.BootstrapStreams(ctx)   // idempotent; safe to call on every start
-//	// pass `bus` as port.JobBus into use-case wiring
+//	// pass `bus` as port.JobBus into the worker SDK
 type Bus struct {
 	cfg    config.NATSConfig
 	logger *slog.Logger
@@ -46,21 +41,19 @@ type Bus struct {
 	conn *nats.Conn
 	js   jetstream.JetStream
 
-	// kvs and oss are caches of resolved KeyValue/ObjectStore handles
-	// so repeated KV("...") calls don't re-resolve every time.
+	// kvs caches resolved KeyValue handles so repeated KV("...") calls
+	// don't re-resolve every time.
 	mu  sync.Mutex
 	kvs map[string]jetstream.KeyValue
-	oss map[string]jetstream.ObjectStore
 }
 
 // NewBusFromConn wraps an already-connected *nats.Conn into a Bus.
-// Used by workers, which build their own connection with the enrollment
-// token + ephemeral nkey before the auth-callout admits them. The Bus
-// takes ownership of the connection — caller should not Close it
-// directly; instead call Bus.Close which drains + closes.
+// Workers build their own connection with the enrollment token + ephemeral
+// nkey before the auth-callout admits them. The Bus takes ownership of the
+// connection — caller should not Close it directly; instead call Bus.Close
+// which drains + closes.
 //
-// Unlike NewBus, this does NOT trigger BootstrapStreams. Workers don't
-// declare streams; the server does.
+// Workers don't declare streams; the server does.
 func NewBusFromConn(nc *nats.Conn, clientName string, logger *slog.Logger) (*Bus, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -85,42 +78,6 @@ func NewBusFromConn(nc *nats.Conn, clientName string, logger *slog.Logger) (*Bus
 		conn:   nc,
 		js:     js,
 		kvs:    map[string]jetstream.KeyValue{},
-		oss:    map[string]jetstream.ObjectStore{},
-	}, nil
-}
-
-// NewBus dials the NATS server and constructs a JetStream context.
-// Connection is established eagerly (no lazy mode) so config errors are
-// surfaced at startup rather than at first use.
-func NewBus(ctx context.Context, cfg config.NATSConfig, logger *slog.Logger) (*Bus, error) {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	opts, err := buildConnectOpts(cfg, logger)
-	if err != nil {
-		return nil, fmt.Errorf("nats: build connect opts: %w", err)
-	}
-	nc, err := nats.Connect(cfg.URL, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("nats: connect %s: %w", cfg.URL, err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		return nil, fmt.Errorf("nats: create jetstream context: %w", err)
-	}
-	logger.Info("nats: connected",
-		"url", cfg.URL,
-		"client_name", cfg.ClientName,
-		"cluster", cfg.ClusterName,
-	)
-	return &Bus{
-		cfg:    cfg,
-		logger: logger.With("component", "nats_bus"),
-		conn:   nc,
-		js:     js,
-		kvs:    map[string]jetstream.KeyValue{},
-		oss:    map[string]jetstream.ObjectStore{},
 	}, nil
 }
 
@@ -140,15 +97,6 @@ func (b *Bus) Close() {
 	b.conn = nil
 }
 
-// Conn returns the underlying *nats.Conn for adapters within this package
-// that need it (e.g., the auth-callout subscriber uses core NATS,
-// not JetStream). NOT exposed via port.JobBus — only intra-package use.
-func (b *Bus) Conn() *nats.Conn { return b.conn }
-
-// JS returns the jetstream context. Same constraint as Conn() —
-// intra-package use only.
-func (b *Bus) JS() jetstream.JetStream { return b.js }
-
 // ---------------------------------------------------------------------------
 // port.JobBus: Publish
 // ---------------------------------------------------------------------------
@@ -159,13 +107,7 @@ func (b *Bus) JS() jetstream.JetStream { return b.js }
 //
 // msgID populates the Nats-Msg-Id header so JetStream's per-stream
 // deduplication window collapses retries to one delivery.
-func (b *Bus) Publish(
-	ctx context.Context,
-	subject string,
-	msgID string,
-	body []byte,
-	_ ...port.PublishOpt,
-) error {
+func (b *Bus) Publish(ctx context.Context, subject string, msgID string, body []byte) error {
 	msg := &nats.Msg{
 		Subject: subject,
 		Data:    body,
@@ -192,75 +134,12 @@ func (b *Bus) Publish(
 }
 
 // ---------------------------------------------------------------------------
-// port.JobBus: Subscribe (push consumer)
-// ---------------------------------------------------------------------------
-
-// Subscribe creates (or updates) a durable push consumer and dispatches
-// messages to `handler`. Returning nil from handler ACKs; returning a
-// *port.NakWithDelayError NAKs with the embedded delay; returning a
-// *port.TerminalError calls Term() (no more retries, message DLQ'd);
-// any other error NAKs with the consumer's default backoff schedule.
-func (b *Bus) Subscribe(
-	ctx context.Context,
-	cfg port.ConsumerConfig,
-	handler port.MessageHandler,
-) (port.Subscription, error) {
-	cons, err := b.resolveConsumer(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	cc, err := cons.Consume(func(jm jetstream.Msg) {
-		b.handlePushMessage(ctx, jm, handler)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("nats: consume on %s: %w", cfg.Subject, err)
-	}
-	return &pushSubscription{cc: cc, logger: b.logger.With("consumer", cfg.Durable)}, nil
-}
-
-func (b *Bus) handlePushMessage(
-	ctx context.Context,
-	jm jetstream.Msg,
-	handler port.MessageHandler,
-) {
-	pm := wrapMessage(jm)
-	err := handler(ctx, pm)
-	if err == nil {
-		if ackErr := jm.Ack(); ackErr != nil {
-			b.logger.Warn("nats: ack failed", "subject", jm.Subject(), "error", ackErr)
-		}
-		return
-	}
-
-	// Distinguish the three failure dispositions:
-	var term *port.TerminalError
-	var nakDelay *port.NakWithDelayError
-	switch {
-	case errors.As(err, &term):
-		if termErr := jm.Term(); termErr != nil {
-			b.logger.Warn("nats: term failed", "subject", jm.Subject(), "error", termErr)
-		}
-		b.logger.Info("nats: message terminated",
-			"subject", jm.Subject(), "reason", term.Reason, "cause", err)
-	case errors.As(err, &nakDelay):
-		if nakErr := jm.NakWithDelay(nakDelay.Delay); nakErr != nil {
-			b.logger.Warn("nats: nak-with-delay failed", "subject", jm.Subject(), "error", nakErr)
-		}
-	default:
-		if nakErr := jm.Nak(); nakErr != nil {
-			b.logger.Warn("nats: nak failed", "subject", jm.Subject(), "error", nakErr)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
 // port.JobBus: Pull (pull consumer)
 // ---------------------------------------------------------------------------
 
 // Pull creates (or updates) a durable pull consumer that workers fetch
-// from. Unlike Subscribe, the caller controls batch size and ack timing
-// per message — useful for backpressure-aware workers.
+// from. The caller controls batch size and ack timing per message —
+// useful for backpressure-aware workers.
 func (b *Bus) Pull(
 	ctx context.Context,
 	cfg port.ConsumerConfig,
@@ -272,9 +151,9 @@ func (b *Bus) Pull(
 	return &pullSubscription{cons: cons, logger: b.logger.With("consumer", cfg.Durable)}, nil
 }
 
-// resolveConsumer is the common path for Subscribe and Pull. Calls
-// CreateOrUpdateConsumer so configuration changes (AckWait, MaxDeliver,
-// BackoffSchedule) take effect after a restart without manual cleanup.
+// resolveConsumer calls CreateOrUpdateConsumer so configuration changes
+// (AckWait, MaxDeliver, BackoffSchedule) take effect after a restart
+// without manual cleanup.
 func (b *Bus) resolveConsumer(
 	ctx context.Context,
 	cfg port.ConsumerConfig,
@@ -382,11 +261,11 @@ func (b *Bus) RespondTo(
 }
 
 // ---------------------------------------------------------------------------
-// port.JobBus: KV / ObjectStore handles
+// port.JobBus: KV handles
 // ---------------------------------------------------------------------------
 
 // KV returns a handle on the named KV bucket. The bucket must already
-// exist — call BootstrapStreams (or `nats kv add`) at deploy time.
+// exist — the cairn-core server bootstraps it at startup.
 func (b *Bus) KV(bucket string) (port.KV, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -401,108 +280,64 @@ func (b *Bus) KV(bucket string) (port.KV, error) {
 	return &kvHandle{kv: h}, nil
 }
 
-// ObjectStore returns a handle on the named OS bucket. Similar lifecycle
-// to KV — bucket pre-existence is required.
-func (b *Bus) ObjectStore(bucket string) (port.ObjectStore, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if h, ok := b.oss[bucket]; ok {
-		return &objectStoreHandle{os: h}, nil
-	}
-	h, err := b.js.ObjectStore(context.Background(), bucket)
+type kvHandle struct {
+	kv jetstream.KeyValue
+}
+
+func (h *kvHandle) Get(ctx context.Context, key string) (port.KVEntry, error) {
+	entry, err := h.kv.Get(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("nats: resolve object store %s: %w", bucket, err)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return port.KVEntry{}, port.ErrKVKeyNotFound
+		}
+		return port.KVEntry{}, fmt.Errorf("kv get %s: %w", key, err)
 	}
-	b.oss[bucket] = h
-	return &objectStoreHandle{os: h}, nil
+	return port.KVEntry{
+		Key:       entry.Key(),
+		Value:     entry.Value(),
+		Revision:  entry.Revision(),
+		CreatedAt: entry.Created(),
+	}, nil
 }
 
-// ---------------------------------------------------------------------------
-// Connection options
-// ---------------------------------------------------------------------------
-
-func buildConnectOpts(cfg config.NATSConfig, logger *slog.Logger) ([]nats.Option, error) {
-	opts := []nats.Option{
-		nats.Name(cfg.ClientName),
-		nats.Timeout(cfg.ConnectTimeout),
-		nats.MaxReconnects(cfg.MaxReconnects),
-		nats.ReconnectWait(cfg.ReconnectWait),
-		nats.RetryOnFailedConnect(true),
-		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
-			if err != nil {
-				logger.Warn("nats: disconnected", "error", err)
-			}
-		}),
-		nats.ReconnectHandler(func(c *nats.Conn) {
-			logger.Info("nats: reconnected", "url", c.ConnectedUrl())
-		}),
-		nats.ErrorHandler(func(_ *nats.Conn, sub *nats.Subscription, err error) {
-			subject := ""
-			if sub != nil {
-				subject = sub.Subject
-			}
-			logger.Warn("nats: async error", "subject", subject, "error", err)
-		}),
+func (h *kvHandle) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	rev, err := h.kv.Put(ctx, key, value)
+	if err != nil {
+		return 0, fmt.Errorf("kv put %s: %w", key, err)
 	}
-
-	// Credentials: file > user/password > anonymous.
-	switch {
-	case cfg.CredsFile != "":
-		opts = append(opts, nats.UserCredentials(cfg.CredsFile))
-	case cfg.Username != "":
-		opts = append(opts, nats.UserInfo(cfg.Username, cfg.Password))
-	}
-
-	// TLS.
-	if cfg.TLSCAFile != "" || cfg.TLSCertFile != "" {
-		tlsCfg, err := buildTLSConfig(cfg)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, nats.Secure(tlsCfg))
-	}
-
-	return opts, nil
+	return rev, nil
 }
 
-func buildTLSConfig(cfg config.NATSConfig) (*tls.Config, error) {
-	t := &tls.Config{MinVersion: tls.VersionTLS12}
-	if cfg.TLSCAFile != "" {
-		caBytes, err := os.ReadFile(cfg.TLSCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read TLS CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caBytes) {
-			return nil, errors.New("TLS CA file is not valid PEM")
-		}
-		t.RootCAs = pool
+// CompareAndSet writes if the current revision matches expectedRev. On
+// mismatch returns (newRev=0, ok=false, err=nil) so the caller's retry
+// loop sees a clear retry signal.
+func (h *kvHandle) CompareAndSet(
+	ctx context.Context,
+	key string,
+	value []byte,
+	expectedRev uint64,
+) (uint64, bool, error) {
+	rev, err := h.kv.Update(ctx, key, value, expectedRev)
+	if err == nil {
+		return rev, true, nil
 	}
-	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("load TLS client cert: %w", err)
-		}
-		t.Certificates = []tls.Certificate{cert}
+	// ErrKeyExists covers the create-vs-update collision; a version
+	// mismatch on update surfaces as JSAPI code 10071 ("wrong last
+	// sequence"). Both are non-fatal for the CAS contract.
+	if errors.Is(err, jetstream.ErrKeyExists) || isWrongLastSeqErr(err) {
+		return 0, false, nil
 	}
-	return t, nil
+	return 0, false, fmt.Errorf("kv update %s: %w", key, err)
+}
+
+func isWrongLastSeqErr(err error) bool {
+	var apiErr *jetstream.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode == 10071
 }
 
 // ---------------------------------------------------------------------------
 // Subscription wrappers
 // ---------------------------------------------------------------------------
-
-type pushSubscription struct {
-	cc     jetstream.ConsumeContext
-	logger *slog.Logger
-}
-
-func (s *pushSubscription) Close(ctx context.Context) error {
-	if s.cc != nil {
-		s.cc.Stop()
-	}
-	return nil
-}
 
 type pullSubscription struct {
 	cons   jetstream.Consumer
@@ -560,8 +395,7 @@ func (s *coreSubscription) Close(_ context.Context) error {
 }
 
 // wrapMessage converts a jetstream.Msg into a port.Message snapshot.
-// We don't expose the Ack/Nak methods on Message itself — push-handler
-// callers don't get to choose; pull-handler callers use PullMessage.
+// Ack/Nak stay on PullMessage so the dispatch loop owns disposition.
 func wrapMessage(jm jetstream.Msg) port.Message {
 	headers := map[string]string{}
 	for k, vals := range jm.Headers() {

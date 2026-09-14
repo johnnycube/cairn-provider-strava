@@ -27,7 +27,8 @@ import (
 // Threat-model note: the SDK passes the FULL TokenState (incl. refresh
 // token) to Refresh. The worker is trusted to handle it correctly; if
 // the worker is compromised, refresh tokens leak. NATS Account isolation
-// (architecture.md §4) is what prevents cross-provider blast radius.
+// (cairn-core docs/architecture.md §4) is what prevents cross-provider
+// blast radius.
 // ---------------------------------------------------------------------------
 
 // AuthHandler is implemented by each provider-specific worker.
@@ -178,14 +179,6 @@ func (c *tokenCache) Get(ctx context.Context, accountID string) (Token, error) {
 		entry.state = fresh
 	}
 	return tokenFromState(entry.state), nil
-}
-
-// Invalidate drops cached state. Called when an API call surfaces a 401
-// despite having a fresh-looking token — forces re-fetch on next Get.
-func (c *tokenCache) Invalidate(accountID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.cache, accountID)
 }
 
 func (c *tokenCache) entryFor(accountID string) *cacheEntry {

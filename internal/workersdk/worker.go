@@ -833,7 +833,6 @@ type PresignUploadRequest struct {
 // PresignDownloadRequest matches the presign-download handler.
 type PresignDownloadRequest struct {
 	BlobID string `json:"blob_id,omitempty"`
-	Handle string `json:"handle,omitempty"` // for fallback_handle exchange
 }
 
 // PresignedURL matches the response shape from both presign endpoints.

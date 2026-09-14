@@ -1,5 +1,5 @@
-// Package inmem provides in-memory implementations of port.JobBus,
-// port.KV, and port.ObjectStore for use in unit tests.
+// Package inmem provides in-memory implementations of port.JobBus and
+// port.KV for use in unit tests.
 //
 // Synchronous semantics: every Publish call delivers to all matching
 // subscribers BEFORE returning, so test assertions can run immediately
@@ -39,9 +39,8 @@ type Bus struct {
 	// dedup window — simple set keyed by Nats-Msg-Id header value.
 	seenMsgIDs map[string]struct{}
 
-	// KV + Object Store handles, lazy-resolved per bucket.
+	// KV handles, lazy-resolved per bucket.
 	kvs map[string]*KV
-	oss map[string]*ObjectStore
 }
 
 // New constructs an empty in-memory bus.
@@ -50,7 +49,6 @@ func New() *Bus {
 		rrHandlers: map[string]port.RequestHandler{},
 		seenMsgIDs: map[string]struct{}{},
 		kvs:        map[string]*KV{},
-		oss:        map[string]*ObjectStore{},
 	}
 }
 
@@ -60,13 +58,7 @@ type subscription struct {
 	closed  bool
 }
 
-func (b *Bus) Publish(
-	ctx context.Context,
-	subject string,
-	msgID string,
-	body []byte,
-	_ ...port.PublishOpt,
-) error {
+func (b *Bus) Publish(ctx context.Context, subject string, msgID string, body []byte) error {
 	b.mu.Lock()
 	if msgID != "" {
 		if _, dup := b.seenMsgIDs[msgID]; dup {
@@ -98,6 +90,9 @@ func (b *Bus) Publish(
 	return nil
 }
 
+// Subscribe registers a push-style handler for a subject pattern. Test-only
+// convenience (not part of port.JobBus): it lets a test observe what the
+// worker published without driving a pull loop.
 func (b *Bus) Subscribe(
 	_ context.Context,
 	cfg port.ConsumerConfig,
@@ -154,17 +149,6 @@ func (b *Bus) KV(bucket string) (port.KV, error) {
 	kv := &KV{entries: map[string]*kvEntry{}}
 	b.kvs[bucket] = kv
 	return kv, nil
-}
-
-func (b *Bus) ObjectStore(bucket string) (port.ObjectStore, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if os, ok := b.oss[bucket]; ok {
-		return os, nil
-	}
-	os := &ObjectStore{entries: map[string]*objectEntry{}}
-	b.oss[bucket] = os
-	return os, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -226,16 +210,6 @@ func (k *KV) Get(_ context.Context, key string) (port.KVEntry, error) {
 	}, nil
 }
 
-func (k *KV) Keys(_ context.Context) ([]string, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	keys := make([]string, 0, len(k.entries))
-	for key := range k.entries {
-		keys = append(keys, key)
-	}
-	return keys, nil
-}
-
 func (k *KV) Put(_ context.Context, key string, value []byte) (uint64, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -271,58 +245,6 @@ func (k *KV) CompareAndSet(_ context.Context, key string, value []byte, expected
 	e.value = append([]byte(nil), value...)
 	e.revision = k.nextRev
 	return k.nextRev, true, nil
-}
-
-func (k *KV) Delete(_ context.Context, key string) error {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	delete(k.entries, key)
-	return nil
-}
-
-func (k *KV) Watch(_ context.Context, _ string) (port.KVWatcher, error) {
-	return nil, errors.New("inmem: Watch not implemented")
-}
-
-// ---------------------------------------------------------------------------
-// ObjectStore
-// ---------------------------------------------------------------------------
-
-type ObjectStore struct {
-	mu      sync.Mutex
-	entries map[string]*objectEntry
-}
-
-type objectEntry struct {
-	data []byte
-	meta port.ObjectMeta
-}
-
-func (o *ObjectStore) Put(_ context.Context, key string, data []byte, meta port.ObjectMeta) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.entries[key] = &objectEntry{
-		data: append([]byte(nil), data...),
-		meta: meta,
-	}
-	return nil
-}
-
-func (o *ObjectStore) Get(_ context.Context, key string) ([]byte, port.ObjectMeta, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	e, ok := o.entries[key]
-	if !ok {
-		return nil, port.ObjectMeta{}, fmt.Errorf("inmem: object %s not found", key)
-	}
-	return append([]byte(nil), e.data...), e.meta, nil
-}
-
-func (o *ObjectStore) Delete(_ context.Context, key string) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	delete(o.entries, key)
-	return nil
 }
 
 // ---------------------------------------------------------------------------
