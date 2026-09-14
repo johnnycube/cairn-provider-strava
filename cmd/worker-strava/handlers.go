@@ -36,6 +36,8 @@ type workerConfig struct {
 	LogLevel        slog.Level
 }
 
+// loadConfig reads the worker's environment. The only value that can be
+// malformed is CAIRN_LOG_LEVEL (debug|info|warn|error, default info).
 func loadConfig() (workerConfig, error) {
 	cfg := workerConfig{
 		NATSURL:         envOr("CAIRN_NATS_URL", "nats://localhost:4222"),
@@ -44,7 +46,9 @@ func loadConfig() (workerConfig, error) {
 		NATSPassword:    os.Getenv("CAIRN_NATS_PASSWORD"),
 		WorkerName:      envOr("CAIRN_WORKER_NAME", workerName),
 		InstanceID:      envOr("CAIRN_WORKER_INSTANCE_ID", hostnameOr("strava-worker")),
-		LogLevel:        slog.LevelInfo,
+	}
+	if err := cfg.LogLevel.UnmarshalText([]byte(envOr("CAIRN_LOG_LEVEL", "info"))); err != nil {
+		return workerConfig{}, fmt.Errorf("CAIRN_LOG_LEVEL: %w", err)
 	}
 	// An enrollment token is the production path (NATS auth-callout mints a
 	// scoped user-JWT — see cairn-core docs/architecture.md §4.5). For
@@ -163,12 +167,15 @@ type busHandle struct {
 // Rate limiter
 // ---------------------------------------------------------------------------
 
-func newRateLimiter(bus busHandle, _ *slog.Logger) port.RateLimiter {
+// newRateLimiter returns nil (no local limiting) when the shared KV bucket
+// is unreachable, so a missing bucket degrades to relying on upstream 429s.
+func newRateLimiter(bus busHandle, logger *slog.Logger) port.RateLimiter {
 	kv, err := bus.KV("cairn_rate_limits")
 	if err != nil {
-		// KV bucket missing — server hasn't bootstrapped yet, or worker
-		// lacks permissions. Operate without rate limiting; the upstream
-		// 429 path will still react via ObserveRateLimit429.
+		// Server hasn't bootstrapped the bucket yet, or the worker lacks
+		// permissions. The upstream 429 path still reacts via
+		// ObserveRateLimit429, but nothing throttles proactively.
+		logger.Warn("rate-limit KV bucket unavailable; running without local rate limiting", "error", err)
 		return nil
 	}
 	return natsadapter.NewRateLimiter(kv, map[string]int{
@@ -803,7 +810,7 @@ func makeBackfillHandler(cfg workerConfig, client *stravaClient) func(context.Co
 
 		// Backfill enqueues per-activity fetch_source sub-jobs; the result
 		// itself carries no data events, just the worker stamp.
-		_ = enqueued
+		w.Logger().Info("backfill enqueued fetch_source jobs", "account_id", in.AccountID, "enqueued", enqueued)
 		result := &workerv1.JobResult{
 			WorkerName:    cfg.WorkerName,
 			WorkerVersion: workerVersion,
@@ -937,7 +944,8 @@ func makeReconcileHandler(cfg workerConfig, client *stravaClient) func(context.C
 		// JobResult wire format carrying an account field. The server MUST see
 		// this even when zero activities were found — advancing last_sync_at
 		// is what stops the scheduler from re-polling every tick.
-		_ = newImports
+		w.Logger().Info("reconcile enqueued fetch_source jobs",
+			"account_id", in.AccountID, "new_imports", newImports, "watermark", highWaterMark)
 		result := &workerv1.JobResult{
 			WorkerName:    cfg.WorkerName,
 			WorkerVersion: workerVersion,

@@ -185,15 +185,17 @@ func parseStravaRefreshResponse(body []byte, current port.TokenState) (port.Toke
 // the most common discriminators.
 func classifyStravaError(body []byte) string {
 	s := strings.ToLower(string(body))
+	// Specific client-side codes first: "invalid_client" also matches the
+	// bare "invalid" check below.
 	switch {
-	case strings.Contains(s, "invalid_grant"), strings.Contains(s, "invalid"):
-		// "invalid" appears in their per-field error code for revoked
-		// refresh tokens. Both flavours mean "user must reauth".
-		return "invalid_grant"
 	case strings.Contains(s, "invalid_client"):
 		return "invalid_client" // config bug
 	case strings.Contains(s, "unauthorized_client"):
 		return "unauthorized_client"
+	case strings.Contains(s, "invalid_grant"), strings.Contains(s, "invalid"):
+		// "invalid" appears in their per-field error code for revoked
+		// refresh tokens. Both flavours mean "user must reauth".
+		return "invalid_grant"
 	default:
 		return "refresh_rejected"
 	}

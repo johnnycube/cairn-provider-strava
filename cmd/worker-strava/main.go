@@ -10,10 +10,12 @@
 // Required ENV (defaults in workersdk.Config docs):
 //
 //	CAIRN_NATS_URL                       e.g. nats://nats:4222
-//	CAIRN_WORKER_NAME                    must match enrollment WorkerNamePattern
-//	CAIRN_WORKER_ENROLLMENT_TOKEN        from POST /admin/worker-enrollments
-//	CAIRN_STRAVA_CLIENT_ID               for direct API auth (optional; usually
-//	                                     unused — server fetches tokens via NATS)
+//	CAIRN_NATS_USER / CAIRN_NATS_PASSWORD  optional, for authenticated servers
+//	CAIRN_WORKER_NAME                    must equal the enrollment's name
+//	CAIRN_WORKER_ENROLLMENT_TOKEN        from POST /api/admin/worker-enrollments
+//	CAIRN_WORKER_INSTANCE_ID             optional stable id per instance
+//	CAIRN_STRAVA_WEBHOOK_VERIFY_TOKEN    set on exactly one instance
+//	CAIRN_LOG_LEVEL                      debug|info|warn|error (default info)
 //
 // Worker version + package are compile-time constants (workerVersion /
 // workerPackage) — they define the worker's schema, so they are not env-driven.
@@ -71,20 +73,20 @@ const (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "load config:", err)
+		os.Exit(1)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 
-	if err := run(logger); err != nil {
+	if err := run(cfg, logger); err != nil {
 		logger.Error("worker exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(logger *slog.Logger) error {
-	cfg, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
+func run(cfg workerConfig, logger *slog.Logger) error {
 	bus, err := connectBus(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("connect bus: %w", err)

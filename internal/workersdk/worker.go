@@ -42,6 +42,8 @@ package workersdk
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,7 +68,7 @@ type Config struct {
 	Name string
 
 	// InstanceID disambiguates multiple instances of the same Name
-	// (e.g. "strava-fetcher-pod-7"). Defaults to a random UUID per
+	// (e.g. "strava-fetcher-pod-7"). Defaults to a random hex id per
 	// process start.
 	InstanceID string
 
@@ -806,10 +808,14 @@ func deriveResultSubject(jobSubject string) string {
 }
 
 // randID generates a short random identifier for the worker instance.
-// Deliberately not crypto-strong — collisions are operational, not
-// security, concerns.
 func randID() string {
-	return fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Nanosecond())
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand only fails on a broken platform; fall back to a
+		// time-derived id so the worker can still start.
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // PresignUploadRequest matches the JSON shape the cairn-server's

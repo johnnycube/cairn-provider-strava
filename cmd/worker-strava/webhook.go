@@ -80,6 +80,8 @@ func handleWebhookEvent(ctx context.Context, w *workersdk.Worker, ev workersdk.W
 	if err != nil {
 		// Orphaned webhook (account disconnected). ACK to drain the
 		// Strava queue; reconcile-sync covers any drift later.
+		w.Logger().Info("webhook account lookup failed; dropping event",
+			"owner_id", sev.OwnerID, "subscription_id", sev.SubscriptionID, "error", err)
 		return nil
 	}
 
@@ -109,8 +111,9 @@ func handleWebhookEvent(ctx context.Context, w *workersdk.Worker, ev workersdk.W
 		return w.Enqueue(ctx, "cairn.events.source.deleted_upstream", msgID, body)
 
 	default:
-		// Unknown aspect_type — log via the SDK's logger and ACK so we
-		// don't retry forever on a payload shape we don't understand.
+		// ACK so we don't retry forever on a payload shape we don't understand.
+		w.Logger().Info("webhook unknown aspect_type; dropping event",
+			"aspect_type", sev.AspectType, "object_id", sev.ObjectID)
 		return nil
 	}
 }
