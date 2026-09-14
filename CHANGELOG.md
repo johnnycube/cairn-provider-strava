@@ -4,6 +4,29 @@ All notable changes to the Cairn Strava worker are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.2.4] — 2026-09-14
+
+### Fixed
+- `CAIRN_LOG_LEVEL` is honoured; the logger was hard-wired to info.
+- Strava `invalid_client` and `unauthorized_client` token errors are reported
+  as such instead of being classified as `invalid_grant`.
+
+### Changed
+- Webhook events with an unknown `aspect_type`, failed account lookups, and a
+  missing rate-limiter KV bucket are logged instead of passing silently;
+  backfill and reconcile log how many fetches they enqueued.
+- Worker instance IDs default to a random hex id instead of a timestamp.
+- The job and webhook loops share one ack/term/nak path, and photo mirroring
+  reuses the presigned-upload helper.
+
+### Removed
+- Adapter code carried over from cairn-core that the worker never called:
+  connection and TLS setup, stream bootstrap, the push-consumer path, the
+  object store, unused KV and capability helpers, and the `CAIRN_NATS_*`
+  cluster, credential, TLS, reconnect and retention config fields.
+- `tokenCache.Invalidate`: a 401 already terminates the job as
+  `needs_reauth`, and a re-fetch would return the same revoked token.
+
 ## [0.2.3] — 2026-09-11
 
 ### Changed
