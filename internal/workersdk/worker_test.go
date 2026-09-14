@@ -13,6 +13,16 @@ import (
 	"github.com/johnnycube/cairn-provider-strava/internal/port"
 )
 
+// mustNew constructs a Worker or fails the test.
+func mustNew(t *testing.T, cfg Config) *Worker {
+	t.Helper()
+	w, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return w
+}
+
 // stubAuth is a controllable AuthHandler for tests.
 type stubAuth struct {
 	mu        sync.Mutex
@@ -53,7 +63,7 @@ func TestTokenCache_ServerHasFreshState_NoRefreshNeeded(t *testing.T) {
 	}
 
 	auth := &stubAuth{}
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
 
 	tok, err := w.FetchToken(ctx, "acc-1")
 	if err != nil {
@@ -101,7 +111,7 @@ func TestTokenCache_ServerHasExpiredState_TriggersRefresh(t *testing.T) {
 		RefreshToken: "refresh-2",
 		ExpiresAt:    time.Now().Add(2 * time.Hour),
 	}}
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
 
 	tok, err := w.FetchToken(ctx, "acc-1")
 	if err != nil {
@@ -139,7 +149,7 @@ func TestTokenCache_RefreshReturnsTerminalError_MarksNeedsReauth(t *testing.T) {
 	})
 
 	auth := &stubAuth{NextErr: &port.TerminalError{Reason: "invalid_grant"}}
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
 
 	_, err := w.FetchToken(ctx, "acc-1")
 	var term *port.TerminalError
@@ -162,7 +172,7 @@ func TestTokenCache_ServerReturnsAccountGone(t *testing.T) {
 		return json.Marshal(tokenGetReply{Error: "account_gone"})
 	})
 
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: &stubAuth{}})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: &stubAuth{}})
 
 	_, err := w.FetchToken(ctx, "acc-1")
 	var term *port.TerminalError
@@ -182,7 +192,7 @@ func TestTokenCache_ServerReturnsTransient_NakWithDelay(t *testing.T) {
 		return json.Marshal(tokenGetReply{Error: "transient", RetryAfter: 45})
 	})
 
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: &stubAuth{}})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: &stubAuth{}})
 
 	_, err := w.FetchToken(ctx, "acc-1")
 	var nak *port.NakWithDelayError
@@ -222,7 +232,7 @@ func TestTokenCache_StaleStore_RefetchesAndUsesWinningState(t *testing.T) {
 		ExpiresAt:    time.Now().Add(2 * time.Hour),
 		RefreshToken: "y",
 	}}
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Auth: auth})
 
 	tok, err := w.FetchToken(ctx, "acc-1")
 	if err != nil {
@@ -264,7 +274,7 @@ func (s *stubLimiter) SyncUsage(_ context.Context, _ string, _, _ int, _ time.Ti
 func TestReserveAPI_Allow(t *testing.T) {
 	bus := inmem.New()
 	limiter := &stubLimiter{Allow: true}
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Limiter: limiter})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Limiter: limiter})
 
 	if err := w.ReserveAPI(context.Background(), "strava:short", 1); err != nil {
 		t.Fatalf("expected nil, got %v", err)
@@ -274,7 +284,7 @@ func TestReserveAPI_Allow(t *testing.T) {
 func TestReserveAPI_Exhausted_ReturnsNakWithDelay(t *testing.T) {
 	bus := inmem.New()
 	limiter := &stubLimiter{Allow: false, RetryAfter: 3 * time.Minute}
-	w, _ := New(Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Limiter: limiter})
+	w := mustNew(t, Config{Name: "strava-fetcher", Provider: "strava", Bus: bus, Limiter: limiter})
 
 	err := w.ReserveAPI(context.Background(), "strava:short", 1)
 	var nak *port.NakWithDelayError
@@ -297,7 +307,7 @@ func TestHeartbeat_PublishesToKV(t *testing.T) {
 	bus := inmem.New()
 	ctx := context.Background()
 
-	w, _ := New(Config{
+	w := mustNew(t, Config{
 		Name:       "strava-fetcher",
 		InstanceID: "test-instance",
 		Version:    "v0.4.2",

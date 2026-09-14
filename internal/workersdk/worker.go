@@ -14,25 +14,25 @@
 //     external API calls
 //   - Blob upload/download URL presigning via request/reply
 //
-// What the worker author writes:
+// What the worker author writes (see cmd/worker-strava/main.go):
 //
-//	func main() {
-//	    w := workersdk.New(workersdk.Config{
-//	        Name:    "strava-fetcher",
-//	        Version: "v0.4.2",
-//	        Bus:     bus, // a port.JobBus implementation
-//	        Limiter: rl,  // a port.RateLimiter implementation
-//	    })
-//
-//	    w.Handle("cairn.jobs.fetch_source.strava", handlers.FetchSource)
-//	    w.Handle("cairn.jobs.parse_blob.strava", handlers.ParseBlob)
-//	    w.Handle("cairn.jobs.backfill.strava", handlers.Backfill)
-//	    w.Handle("cairn.jobs.reconcile.strava", handlers.Reconcile)
-//
-//	    if err := w.Run(context.Background()); err != nil {
-//	        log.Fatal(err)
-//	    }
+//	w, err := workersdk.New(workersdk.Config{
+//	    Name:     cfg.WorkerName,
+//	    Version:  workerVersion,
+//	    Package:  workerPackage,
+//	    Provider: "strava",
+//	    Bus:      bus,     // *natsadapter.Bus
+//	    Limiter:  limiter, // port.RateLimiter, nil to disable
+//	    Auth:     auth,    // AuthHandler for OAuth refresh
+//	    Logger:   logger,
+//	    Manifest: stravaManifest(),
+//	})
+//	if err != nil {
+//	    return err
 //	}
+//	w.Handle("cairn.jobs.fetch_source.strava", makeFetchSourceHandler(cfg, client))
+//	w.Handle("cairn.jobs.backfill.strava", makeBackfillHandler(cfg, client))
+//	return w.Run(ctx)
 //
 // The HandlerFunc receives a Job with the body + headers + helpers
 // for token-fetch and result-reporting. It returns nil for success
@@ -63,8 +63,8 @@ import (
 
 // Config is the worker's startup configuration.
 type Config struct {
-	// Name is the worker's identity, matching the WorkerNamePattern on
-	// the enrollment that admitted this connection. E.g. "strava-fetcher".
+	// Name is the worker's identity and must equal the name on the
+	// enrollment that admitted this connection. E.g. "strava-fetcher".
 	Name string
 
 	// InstanceID disambiguates multiple instances of the same Name
@@ -453,35 +453,7 @@ func (w *Worker) dispatchMessage(
 	}
 
 	err := fn(ctx, w, job)
-	switch {
-	case err == nil:
-		if ackErr := m.Ack(ctx); ackErr != nil {
-			w.logger.Warn("ack failed", "subject", subject, "error", ackErr)
-		}
-	default:
-		var term *port.TerminalError
-		var nakDelay *port.NakWithDelayError
-		switch {
-		case errors.As(err, &term):
-			if e := m.Term(ctx); e != nil {
-				w.logger.Warn("term failed", "subject", subject, "error", e)
-			}
-			w.logger.Info("handler returned terminal error",
-				"subject", subject, "reason", term.Reason, "cause", err)
-		case errors.As(err, &nakDelay):
-			if e := m.NakWithDelay(ctx, nakDelay.Delay); e != nil {
-				w.logger.Warn("nak-with-delay failed", "subject", subject, "error", e)
-			}
-			return nakDelay.Delay
-		default:
-			if e := m.Nak(ctx); e != nil {
-				w.logger.Warn("nak failed", "subject", subject, "error", e)
-			}
-			w.logger.Info("handler returned retryable error",
-				"subject", subject, "delivery", msg.DeliveryAttempt, "error", err)
-		}
-	}
-	return 0
+	return w.ackByError(ctx, m, subject, msg.DeliveryAttempt, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -794,11 +766,11 @@ func consumerName(worker, subject string) string {
 	return worker + "__" + clean
 }
 
-// deriveResultSubject converts a job subject into the canonical result
-// subject. E.g. "cairn.jobs.fetch_source.strava" → "cairn.results.fetch_source.strava".
 // Logger returns the worker's structured logger so handlers can log.
 func (w *Worker) Logger() *slog.Logger { return w.logger }
 
+// deriveResultSubject converts a job subject into the canonical result
+// subject. E.g. "cairn.jobs.fetch_source.strava" → "cairn.results.fetch_source.strava".
 func deriveResultSubject(jobSubject string) string {
 	const jobsPrefix = "cairn.jobs."
 	if len(jobSubject) > len(jobsPrefix) && jobSubject[:len(jobsPrefix)] == jobsPrefix {

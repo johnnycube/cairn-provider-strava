@@ -309,7 +309,7 @@ func mapReplyError(reason string, retryAfterSeconds int) error {
 }
 
 // ---------------------------------------------------------------------------
-// Wire types — must match cmd/server/oauth_token_handler.go
+// Wire types — must match the token exchange handler in cairn-core
 // ---------------------------------------------------------------------------
 
 type tokenGetReply struct {

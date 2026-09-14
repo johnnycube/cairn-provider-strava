@@ -6,8 +6,8 @@ import (
 )
 
 // JobBus is the asynchronous message bus interface. NATS adapter lives
-// under internal/adapter/secondary/nats/. Use cases depend on JobBus,
-// not on nats.Conn directly.
+// under internal/nats/. The worker SDK depends on JobBus, not on
+// nats.Conn directly.
 //
 // The name "JobBus" rather than "MessageQueue" is intentional. Cairn
 // does not pretend other backends (Kafka, SQS, RabbitMQ) are drop-in

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -86,29 +85,8 @@ func mirrorPhoto(ctx context.Context, w *workersdk.Worker, userID, activityID, u
 		w.Logger().Warn("photo presign failed", "activity", activityID, "error", err)
 		return nil
 	}
-	method := up.Method
-	if method == "" {
-		method = http.MethodPut
-	}
-	req, err := http.NewRequestWithContext(ctx, method, up.URL, bytes.NewReader(data))
-	if err != nil {
-		return nil
-	}
-	for k, v := range up.RequiredHeaders {
-		req.Header.Set(k, v)
-	}
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", ct)
-	}
-	resp, err := archiveHTTPClient.Do(req)
-	if err != nil {
+	if err := putPresigned(ctx, up, data, ct); err != nil {
 		w.Logger().Warn("photo upload failed", "activity", activityID, "error", err)
-		return nil
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		w.Logger().Warn("photo upload status", "activity", activityID, "status", resp.StatusCode)
 		return nil
 	}
 	return &workerv1.Attachment{

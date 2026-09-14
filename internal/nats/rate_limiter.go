@@ -76,14 +76,14 @@ func NewRateLimiter(kv port.KV, capacities map[string]int) *RateLimiter {
 // lockstep. attempt 0 → up to ~0.4ms; grows to a ~20ms cap.
 func casBackoff(attempt int) time.Duration {
 	const base = 200 * time.Microsecond
-	const cap = 20 * time.Millisecond
+	const maxSpan = 20 * time.Millisecond
 	shift := attempt
 	if shift > 6 {
 		shift = 6
 	}
 	span := base << shift
-	if span > cap {
-		span = cap
+	if span > maxSpan {
+		span = maxSpan
 	}
 	return time.Duration(rand.Int63n(int64(span) + 1))
 }
@@ -108,15 +108,11 @@ var windowDurations = map[string]time.Duration{
 
 func windowFor(bucket string) time.Duration {
 	for suffix, d := range windowDurations {
-		if hasSuffix(bucket, ":"+suffix) {
+		if strings.HasSuffix(bucket, ":"+suffix) {
 			return d
 		}
 	}
 	return 15 * time.Minute // sensible default
-}
-
-func hasSuffix(s, suffix string) bool {
-	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
 
 // kvKey turns a bucket name into a valid NATS KV key. Bucket names use the
@@ -172,12 +168,12 @@ func (r *RateLimiter) Reserve(
 		// Carry the last known capacity forward — SyncUsage may have learned
 		// the provider's real limit, which beats the configured guess.
 		if state.WindowStart.IsZero() || !now.Before(state.WindowResetAt) {
-			cap := state.Capacity
-			if cap <= 0 {
-				cap = capacity
+			carried := state.Capacity
+			if carried <= 0 {
+				carried = capacity
 			}
 			state = rateLimitState{
-				Capacity:      cap,
+				Capacity:      carried,
 				Used:          0,
 				WindowStart:   now,
 				WindowResetAt: now.Add(window),
@@ -193,12 +189,11 @@ func (r *RateLimiter) Reserve(
 		}
 
 		state.Used += tokens
-		newRev, ok, err := r.writeState(ctx, bucket, state, rev)
+		ok, err := r.writeState(ctx, bucket, state, rev)
 		if err != nil {
 			return false, 0, err
 		}
 		if ok {
-			_ = newRev
 			return true, 0, nil
 		}
 		// CAS lost: another worker advanced; back off (top of loop) and retry.
@@ -309,19 +304,19 @@ func (r *RateLimiter) writeState(
 	bucket string,
 	state rateLimitState,
 	expectedRev uint64,
-) (uint64, bool, error) {
+) (bool, error) {
 	payload, err := json.Marshal(state)
 	if err != nil {
-		return 0, false, fmt.Errorf("marshal state: %w", err)
+		return false, fmt.Errorf("marshal state: %w", err)
 	}
 	// CompareAndSet with expectedRev=0 means "create only if no entry
 	// exists" — both nats.KV and the in-memory fake implement this
 	// semantics. Using Put unconditionally would clobber a concurrently-
 	// created entry and lose tokens (200 concurrent workers all racing
 	// the initial create would each Put their own initial state).
-	rev, ok, err := r.kv.CompareAndSet(ctx, kvKey(bucket), payload, expectedRev)
+	_, ok, err := r.kv.CompareAndSet(ctx, kvKey(bucket), payload, expectedRev)
 	if err != nil {
-		return 0, false, fmt.Errorf("kv cas %s: %w", bucket, err)
+		return false, fmt.Errorf("kv cas %s: %w", bucket, err)
 	}
-	return rev, ok, nil
+	return ok, nil
 }

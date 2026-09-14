@@ -88,7 +88,7 @@ func hostnameOr(fallback string) string {
 // generates a new token.)
 // ---------------------------------------------------------------------------
 
-func connectBus(cfg workerConfig, logger *slog.Logger) (busHandle, error) {
+func connectBus(cfg workerConfig, logger *slog.Logger) (*natsadapter.Bus, error) {
 	opts := []nats.Option{
 		nats.Name(cfg.WorkerName),
 		nats.Timeout(10 * time.Second),
@@ -109,11 +109,11 @@ func connectBus(cfg workerConfig, logger *slog.Logger) (busHandle, error) {
 		// connection. The seed lives in memory only — restart = new nkey.
 		userKP, err := nkeys.CreateUser()
 		if err != nil {
-			return busHandle{}, fmt.Errorf("create user nkey: %w", err)
+			return nil, fmt.Errorf("create user nkey: %w", err)
 		}
 		pub, err := userKP.PublicKey()
 		if err != nil {
-			return busHandle{}, fmt.Errorf("user nkey public: %w", err)
+			return nil, fmt.Errorf("user nkey public: %w", err)
 		}
 		logger.Info("strava worker: connecting to NATS (enrollment-token auth-callout)",
 			"url", cfg.NATSURL,
@@ -145,7 +145,7 @@ func connectBus(cfg workerConfig, logger *slog.Logger) (busHandle, error) {
 
 	nc, err := nats.Connect(cfg.NATSURL, opts...)
 	if err != nil {
-		return busHandle{}, fmt.Errorf("nats connect: %w", err)
+		return nil, fmt.Errorf("nats connect: %w", err)
 	}
 
 	// Wrap the connection in our Bus adapter. Workers don't declare
@@ -153,14 +153,9 @@ func connectBus(cfg workerConfig, logger *slog.Logger) (busHandle, error) {
 	bus, err := natsadapter.NewBusFromConn(nc, cfg.WorkerName+":"+cfg.InstanceID, logger)
 	if err != nil {
 		nc.Close()
-		return busHandle{}, fmt.Errorf("wrap into Bus: %w", err)
+		return nil, fmt.Errorf("wrap into Bus: %w", err)
 	}
-	return busHandle{Bus: bus}, nil
-}
-
-// busHandle wraps the bus so we can defer-close it cleanly.
-type busHandle struct {
-	*natsadapter.Bus
+	return bus, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +164,7 @@ type busHandle struct {
 
 // newRateLimiter returns nil (no local limiting) when the shared KV bucket
 // is unreachable, so a missing bucket degrades to relying on upstream 429s.
-func newRateLimiter(bus busHandle, logger *slog.Logger) port.RateLimiter {
+func newRateLimiter(bus port.JobBus, logger *slog.Logger) port.RateLimiter {
 	kv, err := bus.KV("cairn_rate_limits")
 	if err != nil {
 		// Server hasn't bootstrapped the bucket yet, or the worker lacks

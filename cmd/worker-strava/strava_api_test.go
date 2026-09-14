@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
 )
 
 func newTestClient(t *testing.T, h http.HandlerFunc) (*stravaClient, *httptest.Server) {

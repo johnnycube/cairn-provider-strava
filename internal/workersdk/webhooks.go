@@ -6,13 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/johnnycube/cairn-provider-strava/internal/port"
 )
-
-// errAs is a one-line wrapper around errors.As. Used for compactness
-// in the ack-disposition switch.
-func errAs(err error, target any) bool { return errors.As(err, target) }
 
 // ---------------------------------------------------------------------------
 // Webhook helpers
@@ -187,7 +184,7 @@ func (w *Worker) webhookEventLoop(
 				DeliveryAttempt: msg.DeliveryAttempt,
 			}
 			err := fn(ctx, w, ev)
-			w.ackByError(ctx, m, "webhook event", err)
+			w.ackByError(ctx, m, "webhook event", msg.DeliveryAttempt, err)
 		}
 	}
 }
@@ -213,28 +210,37 @@ func (w *Worker) dispatchVerify(
 }
 
 // ackByError centralises the message-disposition dance shared between
-// the job dispatch loop and the webhook event loop.
-func (w *Worker) ackByError(ctx context.Context, m port.PullMessage, kind string, err error) {
+// the job dispatch loop and the webhook event loop. `kind` labels the
+// log lines (job subject or "webhook event"). Returns the NakWithDelay
+// delay when the handler reported one — the job pull loop uses it to
+// pause before fetching more — and 0 otherwise.
+func (w *Worker) ackByError(ctx context.Context, m port.PullMessage, kind string, attempt int, err error) time.Duration {
 	if err == nil {
 		if e := m.Ack(ctx); e != nil {
 			w.logger.Warn("ack failed", "kind", kind, "error", e)
 		}
-		return
+		return 0
 	}
 	var term *port.TerminalError
 	var nak *port.NakWithDelayError
 	switch {
-	case errAs(err, &term):
+	case errors.As(err, &term):
 		if e := m.Term(ctx); e != nil {
 			w.logger.Warn("term failed", "kind", kind, "error", e)
 		}
-	case errAs(err, &nak):
+		w.logger.Info("handler returned terminal error",
+			"kind", kind, "reason", term.Reason, "cause", err)
+	case errors.As(err, &nak):
 		if e := m.NakWithDelay(ctx, nak.Delay); e != nil {
 			w.logger.Warn("nak-with-delay failed", "kind", kind, "error", e)
 		}
+		return nak.Delay
 	default:
 		if e := m.Nak(ctx); e != nil {
 			w.logger.Warn("nak failed", "kind", kind, "error", e)
 		}
+		w.logger.Info("handler returned retryable error",
+			"kind", kind, "delivery", attempt, "error", err)
 	}
+	return 0
 }
