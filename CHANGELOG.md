@@ -4,6 +4,13 @@ All notable changes to the Cairn Strava worker are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [0.2.5] — 2026-09-29
+
+### Changed
+- Dependency updates: nats.go 1.54.0, which lifts the indirect
+  golang.org/x/crypto to 0.57.0, golang.org/x/sys to 0.48.0 and
+  klauspost/compress to 1.20.0. No changes to the worker code.
+
 ## [0.2.4] — 2026-09-14
 
 ### Fixed
