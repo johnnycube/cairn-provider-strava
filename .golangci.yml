@@ -1,0 +1,41 @@
+version: "2"
+
+formatters:
+  enable: [gofmt]
+
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+    - unparam
+    - gosec
+    - errorlint
+    - gocognit
+    - funlen
+    - dupl
+  settings:
+    gocognit:
+      min-complexity: 15
+    funlen:
+      lines: 60
+      statements: 40
+    dupl:
+      threshold: 120
+    errcheck:
+      # Closing a fully read HTTP response body has no actionable error.
+      exclude-functions:
+        - (io.Closer).Close
+  exclusions:
+    generated: strict
+    paths:
+      # protoc-generated stubs synced from cairn-core (scripts/sync-proto.sh)
+      - ^proto/
+    rules:
+      # Tests use fixed tokens, fake servers and table-driven bodies by design.
+      - path: _test\.go
+        linters:
+          - gosec
+          - funlen
+          - gocognit
+          - dupl

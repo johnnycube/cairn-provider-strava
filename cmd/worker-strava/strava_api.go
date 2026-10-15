@@ -238,7 +238,7 @@ type stravaStreamsResponse map[string]stravaStream
 // GetActivity fetches a single activity. include_all_efforts=true is required
 // for Strava to return the activity's segment_efforts.
 func (c *stravaClient) GetActivity(ctx context.Context, accessToken, activityID string) (*stravaActivity, error) {
-	resp, err := c.do(ctx, accessToken, http.MethodGet, "/activities/"+activityID+"?include_all_efforts=true", nil)
+	resp, err := c.get(ctx, accessToken, "/activities/"+activityID+"?include_all_efforts=true")
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (c *stravaClient) GetActivity(ctx context.Context, accessToken, activityID 
 // before invoking and cache the result (segments are immutable enough that one
 // fetch per segment per worker lifetime is plenty).
 func (c *stravaClient) GetSegment(ctx context.Context, accessToken, segmentID string) (*stravaDetailedSegment, error) {
-	resp, err := c.do(ctx, accessToken, http.MethodGet, "/segments/"+segmentID, nil)
+	resp, err := c.get(ctx, accessToken, "/segments/"+segmentID)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +284,7 @@ func (c *stravaClient) GetActivityStreams(ctx context.Context, accessToken, acti
 	}
 	path := "/activities/" + activityID + "/streams?" + q.Encode()
 
-	resp, err := c.do(ctx, accessToken, http.MethodGet, path, nil)
+	resp, err := c.get(ctx, accessToken, path)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func (c *stravaClient) GetActivityPhotos(ctx context.Context, accessToken, activ
 	}
 	path := "/activities/" + activityID + "/photos?" + q.Encode()
 
-	resp, err := c.do(ctx, accessToken, http.MethodGet, path, nil)
+	resp, err := c.get(ctx, accessToken, path)
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +351,7 @@ func (c *stravaClient) ListAthleteActivities(ctx context.Context, accessToken st
 	}
 	path := "/athlete/activities?" + q.Encode()
 
-	resp, err := c.do(ctx, accessToken, http.MethodGet, path, nil)
+	resp, err := c.get(ctx, accessToken, path)
 	if err != nil {
 		return nil, err
 	}
@@ -368,8 +368,9 @@ func (c *stravaClient) ListAthleteActivities(ctx context.Context, accessToken st
 // Transport
 // ---------------------------------------------------------------------------
 
-func (c *stravaClient) do(ctx context.Context, accessToken, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+// get issues an authenticated GET; the Strava client is read-only.
+func (c *stravaClient) get(ctx context.Context, accessToken, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -12,18 +12,18 @@ import (
 	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
 )
 
-func newTestClient(t *testing.T, h http.HandlerFunc) (*stravaClient, *httptest.Server) {
+func newTestClient(t *testing.T, h http.HandlerFunc) *stravaClient {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	c := newStravaClient()
 	c.baseURL = srv.URL
 	c.httpClient.Timeout = 2 * time.Second
-	return c, srv
+	return c
 }
 
 func TestGetActivity_Success(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/activities/123" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
@@ -61,7 +61,7 @@ func TestGetActivity_Success(t *testing.T) {
 }
 
 func TestGetActivity_Unauthorized(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	_, err := c.GetActivity(context.Background(), "expired", "1")
@@ -71,7 +71,7 @@ func TestGetActivity_Unauthorized(t *testing.T) {
 }
 
 func TestGetActivity_NotFound(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	_, err := c.GetActivity(context.Background(), "ok", "missing")
@@ -81,7 +81,7 @@ func TestGetActivity_NotFound(t *testing.T) {
 }
 
 func TestGetActivity_RateLimited(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "120")
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
@@ -96,7 +96,7 @@ func TestGetActivity_RateLimited(t *testing.T) {
 }
 
 func TestGetActivity_RateLimited_NoHeader(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 	_, err := c.GetActivity(context.Background(), "ok", "1")
@@ -144,7 +144,7 @@ func TestRateLimitReset_DailyVsShort(t *testing.T) {
 
 func TestReportUsage_PrefersReadHeaders(t *testing.T) {
 	var got [4]int
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-RateLimit-Limit", "200,2000")
 		w.Header().Set("X-RateLimit-Usage", "150,900")
 		w.Header().Set("X-ReadRateLimit-Limit", "100,1000")
@@ -161,7 +161,7 @@ func TestReportUsage_PrefersReadHeaders(t *testing.T) {
 }
 
 func TestGetActivity_ServerError(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte("upstream down"))
 	})
@@ -173,7 +173,7 @@ func TestGetActivity_ServerError(t *testing.T) {
 }
 
 func TestGetActivityStreams_KeyByType(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.RawQuery, "key_by_type=true") {
 			t.Errorf("expected key_by_type=true in %q", r.URL.RawQuery)
 		}

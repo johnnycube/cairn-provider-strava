@@ -55,17 +55,17 @@ type StravaAuthHandler struct {
 // NewStravaAuthHandler constructs the handler. No credentials are read from
 // env — they arrive per-refresh from the server (per-user model). Only the
 // token endpoint is configurable, for tests.
-func NewStravaAuthHandler() (*StravaAuthHandler, error) {
+func NewStravaAuthHandler() *StravaAuthHandler {
 	tokenURL := os.Getenv("CAIRN_STRAVA_TOKEN_URL")
 	if tokenURL == "" {
-		tokenURL = "https://www.strava.com/oauth/token"
+		tokenURL = "https://www.strava.com/oauth/token" //nolint:gosec // G101: public endpoint URL, not a credential
 	}
 	return &StravaAuthHandler{
 		tokenURL: tokenURL,
 		http: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-	}, nil
+	}
 }
 
 // Refresh implements workersdk.AuthHandler.
