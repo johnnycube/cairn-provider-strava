@@ -6,13 +6,27 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [0.2.6] — 2026-10-15
+
 ### Fixed
-- The webhook event loop waits a second after a failed fetch instead of
-  retrying in a tight loop; the job pull loop's wait now ends on shutdown.
 - Publishing to a subject outside any JetStream stream that has a core NATS
   subscriber no longer times out after five seconds (and gets delivered twice
   on retry): the bus looks up whether a stream covers the subject, caches the
   answer, and picks JetStream or core publish up front.
+- The webhook event loop waits a second after a failed fetch instead of
+  retrying in a tight loop; the job pull loop's wait now ends on shutdown.
+
+### Changed
+- The repository is onboarded to fleetlint: `make check` (golangci-lint, race
+  tests with a 90% coverage floor, govulncheck, go-licenses, gitleaks, build,
+  fleetlint) gates CI and the image build, CodeQL runs on every change, and
+  workflow actions are pinned by SHA. Release tags must be on main.
+- Backfill and reconcile share their listing and queueing helpers, large
+  handlers are split, and int32 conversions saturate instead of wrapping.
+- The image is built with `-trimpath` and an empty build id, and the alpine
+  base is pinned by digest. go.mod pins `toolchain go1.26.9`.
+- Dependency updates: klauspost/compress 1.20.1 (indirect); nats-server is
+  added as a test-only dependency.
 
 ## [0.2.5] — 2026-09-29
 
