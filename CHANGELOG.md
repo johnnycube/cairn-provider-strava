@@ -6,6 +6,14 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-15
+
+Released alongside Cairn v0.3.0; no worker code changes since 0.2.6.
+
+### Changed
+- Under NATS auth (enrolled workers), this worker needs cairn-core 0.3.0 or
+  later: earlier worker permission templates refused its job consumers.
+
 ## [0.2.6] — 2026-10-15
 
 ### Fixed
