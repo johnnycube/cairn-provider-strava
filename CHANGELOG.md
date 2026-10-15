@@ -6,6 +6,8 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-15
+
 ### Changed
 - With `CAIRN_WORKER_ENROLLMENT_TOKEN` set, the worker presents only the token
   on CONNECT and no longer generates an ephemeral nkey: nats.conf no longer
