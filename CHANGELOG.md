@@ -9,6 +9,10 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 ### Fixed
 - The webhook event loop waits a second after a failed fetch instead of
   retrying in a tight loop; the job pull loop's wait now ends on shutdown.
+- Publishing to a subject outside any JetStream stream that has a core NATS
+  subscriber no longer times out after five seconds (and gets delivered twice
+  on retry): the bus looks up whether a stream covers the subject, caches the
+  answer, and picks JetStream or core publish up front.
 
 ## [0.2.5] — 2026-09-29
 

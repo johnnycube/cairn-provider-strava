@@ -46,6 +46,10 @@ type Bus struct {
 	// don't re-resolve every time.
 	mu  sync.Mutex
 	kvs map[string]jetstream.KeyValue
+
+	// routes caches per-subject stream lookups for Publish.
+	routes      map[string]route
+	noStreamTTL time.Duration
 }
 
 // NewBusFromConn wraps an already-connected *nats.Conn into a Bus.
@@ -79,6 +83,9 @@ func NewBusFromConn(nc *nats.Conn, clientName string, logger *slog.Logger) (*Bus
 		conn:   nc,
 		js:     js,
 		kvs:    map[string]jetstream.KeyValue{},
+		routes: map[string]route{},
+		// Streams are server-owned; recheck misses in case they appear after we connect.
+		noStreamTTL: time.Minute,
 	}, nil
 }
 
@@ -102,12 +109,9 @@ func (b *Bus) Close() {
 // port.JobBus: Publish
 // ---------------------------------------------------------------------------
 
-// Publish sends a message. If the subject is a JetStream subject (matches
-// any declared stream), it's published via JetStream and durably stored.
-// Otherwise it goes via core NATS (fire-and-forget).
-//
-// msgID populates the Nats-Msg-Id header so JetStream's per-stream
-// deduplication window collapses retries to one delivery.
+// Publish sends via JetStream if a stream covers the subject, else via core NATS.
+// Decided up front: a JS publish to a core subscriber awaits an ack that never comes.
+// msgID sets Nats-Msg-Id so JetStream dedup collapses retries.
 func (b *Bus) Publish(ctx context.Context, subject string, msgID string, body []byte) error {
 	msg := &nats.Msg{
 		Subject: subject,
@@ -117,21 +121,66 @@ func (b *Bus) Publish(ctx context.Context, subject string, msgID string, body []
 	if msgID != "" {
 		msg.Header.Set(jetstream.MsgIDHeader, msgID)
 	}
-	// JetStream PublishMsg routes to whichever stream owns the subject.
-	// If no stream owns it, JetStream returns ErrNoStreamResponse and
-	// we fall back to core NATS publish.
-	_, err := b.js.PublishMsg(ctx, msg)
+	stream, err := b.streamFor(ctx, subject)
+	if err != nil {
+		return err
+	}
+	if !stream {
+		return b.corePublish(msg)
+	}
+	_, err = b.js.PublishMsg(ctx, msg)
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, nats.ErrNoStreamResponse) || errors.Is(err, jetstream.ErrNoStreamResponse) {
-		// Core NATS publish — for subjects outside any declared stream.
-		if pubErr := b.conn.PublishMsg(msg); pubErr != nil {
-			return fmt.Errorf("nats: core publish %s: %w", subject, pubErr)
-		}
-		return nil
+	if errors.Is(err, jetstream.ErrNoStreamResponse) {
+		// Stream deleted since the lookup and nobody listens.
+		b.forgetRoute(subject)
+		return b.corePublish(msg)
 	}
 	return fmt.Errorf("nats: js publish %s: %w", subject, err)
+}
+
+func (b *Bus) corePublish(msg *nats.Msg) error {
+	if err := b.conn.PublishMsg(msg); err != nil {
+		return fmt.Errorf("nats: core publish %s: %w", msg.Subject, err)
+	}
+	return nil
+}
+
+// route is a cached stream lookup; checked is when a miss was recorded.
+type route struct {
+	stream  bool
+	checked time.Time
+}
+
+// streamFor reports whether a stream covers subject. Hits are cached for
+// good; misses for noStreamTTL so streams the server creates later are seen.
+func (b *Bus) streamFor(ctx context.Context, subject string) (bool, error) {
+	b.mu.Lock()
+	r, ok := b.routes[subject]
+	b.mu.Unlock()
+	if ok && (r.stream || time.Since(r.checked) < b.noStreamTTL) {
+		return r.stream, nil
+	}
+	_, err := b.js.StreamNameBySubject(ctx, subject)
+	switch {
+	case err == nil:
+		r = route{stream: true}
+	case errors.Is(err, jetstream.ErrStreamNotFound):
+		r = route{checked: time.Now()}
+	default:
+		return false, fmt.Errorf("nats: stream lookup %s: %w", subject, err)
+	}
+	b.mu.Lock()
+	b.routes[subject] = r
+	b.mu.Unlock()
+	return r.stream, nil
+}
+
+func (b *Bus) forgetRoute(subject string) {
+	b.mu.Lock()
+	delete(b.routes, subject)
+	b.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
