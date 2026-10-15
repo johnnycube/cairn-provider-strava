@@ -352,11 +352,9 @@ func (w *Worker) pullLoop(
 
 		msgs, err := sub.Fetch(ctx, w.cfg.PullBatchSize)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || !w.fetchBackoff(ctx, log, "fetch failed", err) {
 				return
 			}
-			log.Warn("fetch failed", "error", err)
-			time.Sleep(1 * time.Second)
 			continue
 		}
 
@@ -397,6 +395,12 @@ func (w *Worker) processBatch(ctx context.Context, msgs []port.PullMessage, subj
 	return backoff
 }
 
+// fetchBackoff logs a failed Fetch and waits before the next; false means stop.
+func (w *Worker) fetchBackoff(ctx context.Context, log *slog.Logger, msg string, err error) bool {
+	log.Warn(msg, "error", err)
+	return w.pause(ctx, fetchErrorBackoff)
+}
+
 // pause sleeps for d; it returns false when ctx or the worker stopped first.
 func (w *Worker) pause(ctx context.Context, d time.Duration) bool {
 	select {
@@ -413,6 +417,9 @@ func (w *Worker) pause(ctx context.Context, d time.Duration) bool {
 // ctx/stop stay responsive and the loop re-checks the limiter periodically even
 // under a long provider window.
 const maxPullBackoff = 60 * time.Second
+
+// fetchErrorBackoff spaces out Fetch retries so a dead connection doesn't spin.
+const fetchErrorBackoff = time.Second
 
 // ackExtendInterval is how often an unresolved message's ack deadline is
 // extended. Must be comfortably below the consumer's AckWait (2m).
