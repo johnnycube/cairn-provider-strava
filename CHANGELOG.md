@@ -6,6 +6,12 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
 ## [Unreleased]
 
+### Changed
+- With `CAIRN_WORKER_ENROLLMENT_TOKEN` set, the worker presents only the token
+  on CONNECT and no longer generates an ephemeral nkey: nats.conf no longer
+  needs a placeholder nkey user. Needs cairn-core 0.3.1 or later for the
+  auth-callout, which binds the user JWT to the nkey nats-server assigns.
+
 ## [0.3.0] — 2026-10-15
 
 Released alongside Cairn v0.3.0; no worker code changes since 0.2.6.

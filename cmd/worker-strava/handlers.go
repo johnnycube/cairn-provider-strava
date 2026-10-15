@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nkeys"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -75,14 +74,10 @@ func hostnameOr(fallback string) string {
 // ---------------------------------------------------------------------------
 // NATS connection via enrollment-token
 //
-// The worker generates a fresh user-NKey pair, then connects to NATS
-// using the enrollment token in the CONNECT.token field. NATS's
-// auth-callout subscriber (on the server) admits the connection by
-// minting a user-JWT scoped to the worker's permissions. After admit,
-// every subsequent message uses the user-JWT for authorization.
-//
-// The worker keeps its user-NKey seed in memory only — never persisted.
-// Worker restart = fresh nkey + new enrollment-callout. (If the
+// The worker presents only its enrollment token on CONNECT. NATS's
+// auth-callout subscriber admits the connection by minting a user-JWT,
+// scoped to the worker's permissions, for the user nkey nats-server
+// assigns the connection. Restart = new enrollment-callout. (If the
 // enrollment was single-use, restart fails admission; the operator
 // generates a new token.)
 // ---------------------------------------------------------------------------
@@ -102,29 +97,12 @@ func connectBus(cfg workerConfig, logger *slog.Logger) (*natsadapter.Bus, error)
 
 	switch {
 	case cfg.EnrollmentToken != "":
-		// Production path: generate a fresh ephemeral user-NKey and present
-		// the enrollment token in the CONNECT.token field. The server's
-		// auth-callout subscriber mints a scoped user-JWT and admits the
-		// connection. The seed lives in memory only — restart = new nkey.
-		userKP, err := nkeys.CreateUser()
-		if err != nil {
-			return nil, fmt.Errorf("create user nkey: %w", err)
-		}
-		pub, err := userKP.PublicKey()
-		if err != nil {
-			return nil, fmt.Errorf("user nkey public: %w", err)
-		}
+		// Production path: core's auth-callout binds the JWT to the server-assigned user nkey.
 		logger.Info("strava worker: connecting to NATS (enrollment-token auth-callout)",
 			"url", cfg.NATSURL,
-			"nkey_public", pub,
 			"worker_name", cfg.WorkerName,
 		)
-		opts = append(opts,
-			nats.Token(cfg.EnrollmentToken),
-			nats.Nkey(pub, func(nonce []byte) ([]byte, error) {
-				return userKP.Sign(nonce)
-			}),
-		)
+		opts = append(opts, nats.Token(cfg.EnrollmentToken))
 
 	default:
 		// Dev path: no enrollment token. Connect anonymously, or with static

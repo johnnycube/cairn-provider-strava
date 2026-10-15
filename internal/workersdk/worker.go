@@ -2,9 +2,9 @@
 // on (Strava-fetcher, Garmin-fetcher, generic-FIT-parser, etc.). The SDK
 // handles the boilerplate that's identical across providers:
 //
-//   - NATS connect with enrollment-token auth (worker generates an
-//     ephemeral nkey, the server's auth-callout admits the connection
-//     and mints a user-JWT scoped to the worker's permissions)
+//   - NATS connect with enrollment-token auth (the server's auth-callout
+//     admits the connection and mints a user-JWT scoped to the worker's
+//     permissions)
 //   - Pull-consumer subscription per registered job subject
 //   - Heartbeat loop that publishes presence to the cairn_worker_presence
 //     KV bucket and the manifest to cairn_worker_manifests on change
