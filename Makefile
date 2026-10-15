@@ -4,8 +4,8 @@ SHELL := bash
 .ONESHELL:
 .DEFAULT_GOAL := check-fast
 MAIN_BRANCH ?= main
-# Total statement coverage the cover target enforces; the suite is at 36.8% (generated proto/ excluded), raise as handler tests land.
-COVER_MIN   ?= 35
+# Total statement coverage the cover target enforces; the suite is at 91.7% (generated proto/ excluded).
+COVER_MIN   ?= 90
 PKGS        := ./...
 # Packages with hand-written code; proto/ holds generated stubs.
 COVER_PKGS   = $(shell go list ./... | grep -v /proto/)

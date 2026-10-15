@@ -36,3 +36,11 @@ func TestDataType_Valid(t *testing.T) {
 		t.Error("Valid wrong")
 	}
 }
+
+func TestUnknownTypesError_ListsSorted(t *testing.T) {
+	err := Manifest{DataType("Zed"): {}, DataType("Alpha"): {}}.Validate()
+	want := "capability manifest references unknown data types: Alpha, Zed"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v; want %q", err, want)
+	}
+}
