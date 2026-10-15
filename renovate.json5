@@ -1,0 +1,79 @@
+// Renovate configuration for github.com/johnnycube/cairn-provider-strava
+// Docs: https://docs.renovatebot.com/configuration-options/
+// Validate locally: npx --yes renovate-config-validator renovate.json5
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  extends: [
+    // config:recommended plus digest pinning of GitHub Actions and Docker
+    // base images, and automatic config migration PRs.
+    'config:best-practices',
+    // Conventional commit messages ("chore(deps): ...").
+    ':semanticCommits',
+    // Batch routine updates into Monday mornings; security updates ignore the
+    // schedule (see vulnerabilityAlerts below).
+    'schedule:earlyMondays',
+    // Tool pins: `# renovate:` comments above *_VERSION in the Makefile and
+    // workflow env blocks.
+    'customManagers:makefileVersions',
+    'customManagers:githubActionsVersions',
+  ],
+
+  // Hook revisions in .pre-commit-config.yaml.
+  'pre-commit': {
+    enabled: true,
+  },
+
+  timezone: 'Europe/Berlin',
+  labels: ['dependencies'],
+
+  prConcurrentLimit: 10,
+  prHourlyLimit: 2,
+
+  // Never propose a release younger than 3 days, so hijacked-package incidents
+  // are usually yanked before a PR appears. Security fixes bypass this.
+  minimumReleaseAge: '3 days',
+  internalChecksFilter: 'strict',
+
+  postUpdateOptions: ['gomodTidy', 'gomodUpdateImportPaths'],
+
+  packageRules: [
+    {
+      description: 'Group all non-major Go updates into a single weekly PR.',
+      matchManagers: ['gomod'],
+      matchUpdateTypes: ['minor', 'patch'],
+      groupName: 'go dependencies (non-major)',
+    },
+    {
+      description: 'Major Go updates stay individual PRs for explicit review.',
+      matchManagers: ['gomod'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      description: 'Go toolchain bumps (go/toolchain directives) are individual PRs; they can change vet/gofmt behavior.',
+      matchManagers: ['gomod'],
+      matchDepTypes: ['golang', 'toolchain'],
+      groupName: 'go toolchain',
+      rangeStrategy: 'bump',
+      dependencyDashboardApproval: true,
+    },
+    {
+      description: 'GitHub Actions: digest/non-major bumps are low risk behind a green CI gate - automerge once checks pass.',
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+      automerge: true,
+      platformAutomerge: true,
+    },
+  ],
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ['before 6am on the first day of the month'],
+  },
+
+  osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: {
+    labels: ['security'],
+  },
+}

@@ -352,50 +352,64 @@ func (w *Worker) pullLoop(
 
 		msgs, err := sub.Fetch(ctx, w.cfg.PullBatchSize)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || !w.fetchBackoff(ctx, log, "fetch failed", err) {
 				return
 			}
-			log.Warn("fetch failed", "error", err)
-			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		// The batch is processed sequentially, and a single handler (slow
-		// provider API, many photos/segments) can outlive the consumer's
-		// AckWait. Without extending the ack deadline JetStream would
-		// redeliver mid-processing — with unbounded MaxDeliver that becomes
-		// an infinite refetch/reingest loop of the same job. Heartbeat every
-		// message from fetch until its dispatch resolves it.
-		stops := make([]func(), len(msgs))
-		for i, m := range msgs {
-			stops[i] = w.extendAckDeadline(ctx, m, subject)
-		}
-
-		// Track the largest rate-limit backoff seen in this batch. When the
-		// provider (or our limiter) says "slow down", every message in the
-		// batch is NAK-delayed AND the loop pauses before pulling more — so
-		// we don't drain the stream into MaxAckPending-pinned redelivery churn.
-		var backoff time.Duration
-		for i, m := range msgs {
-			d := w.dispatchMessage(ctx, m, subject, fn)
-			stops[i]()
-			if d > backoff {
-				backoff = d
-			}
-		}
+		backoff := w.processBatch(ctx, msgs, subject, fn)
 		if backoff > 0 {
-			if backoff > maxPullBackoff {
-				backoff = maxPullBackoff
-			}
+			backoff = min(backoff, maxPullBackoff)
 			log.Info("rate-limited; pausing pull loop", "backoff", backoff)
-			select {
-			case <-ctx.Done():
+			if !w.pause(ctx, backoff) {
 				return
-			case <-w.stopCh:
-				return
-			case <-time.After(backoff):
 			}
 		}
+	}
+}
+
+// processBatch dispatches one fetched batch sequentially and returns the
+// largest rate-limit backoff any handler reported.
+//
+// A single handler (slow provider API, many photos/segments) can outlive the
+// consumer's AckWait. Without extending the ack deadline JetStream would
+// redeliver mid-processing — with unbounded MaxDeliver that becomes an
+// infinite refetch/reingest loop of the same job. Every message is
+// heartbeated from fetch until its dispatch resolves it.
+//
+// When the provider (or our limiter) says "slow down", every message in the
+// batch is NAK-delayed AND the loop pauses before pulling more — so we don't
+// drain the stream into MaxAckPending-pinned redelivery churn.
+func (w *Worker) processBatch(ctx context.Context, msgs []port.PullMessage, subject string, fn HandlerFunc) time.Duration {
+	stops := make([]func(), len(msgs))
+	for i, m := range msgs {
+		stops[i] = w.extendAckDeadline(ctx, m, subject)
+	}
+	var backoff time.Duration
+	for i, m := range msgs {
+		d := w.dispatchMessage(ctx, m, subject, fn)
+		stops[i]()
+		backoff = max(backoff, d)
+	}
+	return backoff
+}
+
+// fetchBackoff logs a failed Fetch and waits before the next; false means stop.
+func (w *Worker) fetchBackoff(ctx context.Context, log *slog.Logger, msg string, err error) bool {
+	log.Warn(msg, "error", err)
+	return w.pause(ctx, fetchErrorBackoff)
+}
+
+// pause sleeps for d; it returns false when ctx or the worker stopped first.
+func (w *Worker) pause(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-w.stopCh:
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 
@@ -403,6 +417,9 @@ func (w *Worker) pullLoop(
 // ctx/stop stay responsive and the loop re-checks the limiter periodically even
 // under a long provider window.
 const maxPullBackoff = 60 * time.Second
+
+// fetchErrorBackoff spaces out Fetch retries so a dead connection doesn't spin.
+const fetchErrorBackoff = time.Second
 
 // ackExtendInterval is how often an unresolved message's ack deadline is
 // extended. Must be comfortably below the consumer's AckWait (2m).
@@ -754,10 +771,10 @@ func (w *Worker) PublishEvent(ctx context.Context, topic string, msgID string, b
 func consumerName(worker, subject string) string {
 	clean := ""
 	for _, r := range subject {
-		switch {
-		case r == '.':
+		switch r {
+		case '.':
 			clean += "_"
-		case r == '*' || r == '>':
+		case '*', '>':
 			// strip wildcards from durable names
 		default:
 			clean += string(r)

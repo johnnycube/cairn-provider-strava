@@ -169,10 +169,9 @@ func (w *Worker) webhookEventLoop(
 		}
 		msgs, err := sub.Fetch(ctx, w.cfg.PullBatchSize)
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || !w.fetchBackoff(ctx, log, "fetch webhook event failed", err) {
 				return
 			}
-			log.Warn("fetch webhook event failed", "error", err)
 			continue
 		}
 		for _, m := range msgs {

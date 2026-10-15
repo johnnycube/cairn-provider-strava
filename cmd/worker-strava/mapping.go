@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -62,37 +63,28 @@ func mapLapsToProto(laps []stravaLap) []*cairnv1.ActivityLap {
 	}
 	out := make([]*cairnv1.ActivityLap, 0, len(laps))
 	for _, l := range laps {
-		lap := &cairnv1.ActivityLap{
-			Index:           int32(l.LapIndex),
-			Label:           l.Name,
-			StartTime:       timestamppb.New(parseStravaTime(l.StartDate)),
-			ElapsedDuration: durationpb.New(time.Duration(l.ElapsedTime) * time.Second),
-			MovingDuration:  durationpb.New(time.Duration(l.MovingTime) * time.Second),
-		}
-		if l.Distance > 0 {
-			lap.DistanceM = &l.Distance
-		}
-		if l.AverageSpeed > 0 {
-			lap.AvgSpeedMps = &l.AverageSpeed
-		}
-		if l.AverageHeartrate > 0 {
-			lap.AvgHeartRateBpm = optI32FromFloat(l.AverageHeartrate)
-		}
-		if l.MaxHeartrate > 0 {
-			lap.MaxHeartRateBpm = optI32FromFloat(l.MaxHeartrate)
-		}
-		if l.AverageWatts > 0 {
-			lap.AvgPowerW = optI32FromFloat(l.AverageWatts)
-		}
-		if l.AverageCadence > 0 {
-			lap.AvgCadence = optI32FromFloat(l.AverageCadence)
-		}
-		if l.TotalElevationGain > 0 {
-			lap.ElevationGainM = &l.TotalElevationGain
-		}
-		out = append(out, lap)
+		out = append(out, mapLap(l))
 	}
 	return out
+}
+
+// mapLap maps one Strava lap; zero metrics stay unset.
+func mapLap(l stravaLap) *cairnv1.ActivityLap {
+	lap := &cairnv1.ActivityLap{
+		Index:           clampI32(l.LapIndex),
+		Label:           l.Name,
+		StartTime:       timestamppb.New(parseStravaTime(l.StartDate)),
+		ElapsedDuration: durationpb.New(time.Duration(l.ElapsedTime) * time.Second),
+		MovingDuration:  durationpb.New(time.Duration(l.MovingTime) * time.Second),
+		DistanceM:       optF64(max(l.Distance, 0)),
+		AvgSpeedMps:     optF64(max(l.AverageSpeed, 0)),
+		AvgHeartRateBpm: optI32FromFloat(max(l.AverageHeartrate, 0)),
+		MaxHeartRateBpm: optI32FromFloat(max(l.MaxHeartrate, 0)),
+		AvgPowerW:       optI32FromFloat(max(l.AverageWatts, 0)),
+		AvgCadence:      optI32FromFloat(max(l.AverageCadence, 0)),
+		ElevationGainM:  optF64(max(l.TotalElevationGain, 0)),
+	}
+	return lap
 }
 
 // mapStreamsToProto pivots Strava's column-keyed streams into the typed
@@ -110,59 +102,39 @@ func mapStreamsToProto(streams stravaStreamsResponse) *cairnv1.ActivityStream {
 	n := len(seconds)
 
 	st := &cairnv1.ActivityStream{
-		SampleCount:  int32(n),
+		SampleCount:  clampI32(n),
 		ResolutionHz: 1.0,
 		TimeS:        seconds,
 	}
 	var channels []cairnv1.StreamChannel
 
 	// latlng is a [N][2] of [lat, lon] pairs in Strava's response.
-	if ch, ok := streams["latlng"]; ok {
-		var latlngs [][2]float64
-		if json.Unmarshal(ch.Data, &latlngs) == nil && len(latlngs) > 0 {
-			lat := make([]float64, n)
-			lon := make([]float64, n)
-			for i := 0; i < n && i < len(latlngs); i++ {
-				lat[i], lon[i] = latlngs[i][0], latlngs[i][1]
-			}
-			st.Latitude, st.Longitude = lat, lon
-			channels = append(channels,
-				cairnv1.StreamChannel_STREAM_CHANNEL_LATITUDE,
-				cairnv1.StreamChannel_STREAM_CHANNEL_LONGITUDE)
-		}
+	if lat, lon := latLngCols(streams, n); lat != nil {
+		st.Latitude, st.Longitude = lat, lon
+		channels = append(channels,
+			cairnv1.StreamChannel_STREAM_CHANNEL_LATITUDE,
+			cairnv1.StreamChannel_STREAM_CHANNEL_LONGITUDE)
 	}
 
-	if col := floatCol(streams, "altitude", n); col != nil {
-		st.AltitudeM = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_ALTITUDE)
+	// Each setter fills its column and reports whether the channel is present;
+	// the slice order is the channel order in the output.
+	setters := []struct {
+		ch  cairnv1.StreamChannel
+		set func() bool
+	}{
+		{cairnv1.StreamChannel_STREAM_CHANNEL_ALTITUDE, func() bool { st.AltitudeM = floatCol(streams, "altitude", n); return st.AltitudeM != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_DISTANCE, func() bool { st.DistanceM = floatCol(streams, "distance", n); return st.DistanceM != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_SPEED, func() bool { st.SpeedMps = floatCol(streams, "velocity_smooth", n); return st.SpeedMps != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_HEART_RATE, func() bool { st.HeartRateBpm = intCol(streams, "heartrate", n); return st.HeartRateBpm != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_POWER, func() bool { st.PowerW = intCol(streams, "watts", n); return st.PowerW != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_CADENCE, func() bool { st.Cadence = intCol(streams, "cadence", n); return st.Cadence != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_TEMPERATURE, func() bool { st.TemperatureC = floatCol(streams, "temp", n); return st.TemperatureC != nil }},
+		{cairnv1.StreamChannel_STREAM_CHANNEL_GRADE, func() bool { st.Grade = floatCol(streams, "grade_smooth", n); return st.Grade != nil }},
 	}
-	if col := floatCol(streams, "distance", n); col != nil {
-		st.DistanceM = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_DISTANCE)
-	}
-	if col := floatCol(streams, "velocity_smooth", n); col != nil {
-		st.SpeedMps = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_SPEED)
-	}
-	if col := intCol(streams, "heartrate", n); col != nil {
-		st.HeartRateBpm = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_HEART_RATE)
-	}
-	if col := intCol(streams, "watts", n); col != nil {
-		st.PowerW = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_POWER)
-	}
-	if col := intCol(streams, "cadence", n); col != nil {
-		st.Cadence = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_CADENCE)
-	}
-	if col := floatCol(streams, "temp", n); col != nil {
-		st.TemperatureC = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_TEMPERATURE)
-	}
-	if col := floatCol(streams, "grade_smooth", n); col != nil {
-		st.Grade = col
-		channels = append(channels, cairnv1.StreamChannel_STREAM_CHANNEL_GRADE)
+	for _, c := range setters {
+		if c.set() {
+			channels = append(channels, c.ch)
+		}
 	}
 
 	st.Channels = channels
@@ -182,71 +154,63 @@ func mapSportType(sportType, legacyType string) (typ cairnv1.ActivityType, disci
 	if src == "" {
 		src = legacyType
 	}
-	switch src {
-	case "Ride":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_ROAD, false, false
-	case "GravelRide":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_GRAVEL, false, false
-	case "MountainBikeRide":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_MTB, false, false
-	case "EMountainBikeRide":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_MTB, true, false
-	case "EBikeRide":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_ROAD, true, false
-	case "VirtualRide":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_ROAD, false, true
-	case "TrackRide", "Velomobile":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, cairnv1.Discipline_DISCIPLINE_RIDE_TRACK, false, false
-
-	case "Run":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RUN, cairnv1.Discipline_DISCIPLINE_RUN_ROAD, false, false
-	case "TrailRun":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RUN, cairnv1.Discipline_DISCIPLINE_RUN_TRAIL, false, false
-	case "VirtualRun":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_RUN, cairnv1.Discipline_DISCIPLINE_RUN_ROAD, false, true
-
-	case "Hike":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_HIKE, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Walk":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_WALK, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-
-	case "Swim":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SWIM, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-
-	case "AlpineSki":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SKI, cairnv1.Discipline_DISCIPLINE_SKI_ALPINE, false, false
-	case "NordicSki", "RollerSki":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SKI, cairnv1.Discipline_DISCIPLINE_SKI_NORDIC, false, false
-	case "BackcountrySki":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SKI, cairnv1.Discipline_DISCIPLINE_SKI_BACKCOUNTRY, false, false
-
-	case "Rowing", "VirtualRow":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_ROW, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-
-	// Extended sport set (Strava sport_type names → coarse Cairn types; no
-	// disciplines defined for these yet).
-	case "Snowboard":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SNOWBOARD, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Kayaking", "Canoeing":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_KAYAK, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "StandUpPaddling":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SUP, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Surfing", "Windsurf", "Kitesurf":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SURF, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Golf":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_GOLF, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "RockClimbing":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_CLIMB, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "InlineSkate", "IceSkate", "Skateboard":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_SKATE, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Elliptical":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_ELLIPTICAL, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Wheelchair", "Handcycle":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_WHEELCHAIR, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
-	case "Tennis", "Pickleball", "Squash", "Badminton", "Racquetball", "TableTennis":
-		return cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
+	if m, ok := sportTypes[src]; ok {
+		return m.typ, m.discipline, m.ebike, m.virtual
 	}
 	return cairnv1.ActivityType_ACTIVITY_TYPE_WORKOUT, cairnv1.Discipline_DISCIPLINE_UNSPECIFIED, false, false
+}
+
+type sportMapping struct {
+	typ        cairnv1.ActivityType
+	discipline cairnv1.Discipline
+	ebike      bool
+	virtual    bool
+}
+
+// sportTypes maps Strava sport_type names to Cairn types. The extended sports
+// (Snowboard onwards) map to coarse types with no discipline yet.
+var sportTypes = map[string]sportMapping{
+	"Ride":              {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_ROAD},
+	"GravelRide":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_GRAVEL},
+	"MountainBikeRide":  {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_MTB},
+	"EMountainBikeRide": {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_MTB, ebike: true},
+	"EBikeRide":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_ROAD, ebike: true},
+	"VirtualRide":       {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_ROAD, virtual: true},
+	"TrackRide":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_TRACK},
+	"Velomobile":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RIDE, discipline: cairnv1.Discipline_DISCIPLINE_RIDE_TRACK},
+	"Run":               {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RUN, discipline: cairnv1.Discipline_DISCIPLINE_RUN_ROAD},
+	"TrailRun":          {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RUN, discipline: cairnv1.Discipline_DISCIPLINE_RUN_TRAIL},
+	"VirtualRun":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_RUN, discipline: cairnv1.Discipline_DISCIPLINE_RUN_ROAD, virtual: true},
+	"Hike":              {typ: cairnv1.ActivityType_ACTIVITY_TYPE_HIKE, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Walk":              {typ: cairnv1.ActivityType_ACTIVITY_TYPE_WALK, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Swim":              {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SWIM, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"AlpineSki":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKI, discipline: cairnv1.Discipline_DISCIPLINE_SKI_ALPINE},
+	"NordicSki":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKI, discipline: cairnv1.Discipline_DISCIPLINE_SKI_NORDIC},
+	"RollerSki":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKI, discipline: cairnv1.Discipline_DISCIPLINE_SKI_NORDIC},
+	"BackcountrySki":    {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKI, discipline: cairnv1.Discipline_DISCIPLINE_SKI_BACKCOUNTRY},
+	"Rowing":            {typ: cairnv1.ActivityType_ACTIVITY_TYPE_ROW, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"VirtualRow":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_ROW, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Snowboard":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SNOWBOARD, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Kayaking":          {typ: cairnv1.ActivityType_ACTIVITY_TYPE_KAYAK, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Canoeing":          {typ: cairnv1.ActivityType_ACTIVITY_TYPE_KAYAK, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"StandUpPaddling":   {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SUP, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Surfing":           {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SURF, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Windsurf":          {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SURF, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Kitesurf":          {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SURF, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Golf":              {typ: cairnv1.ActivityType_ACTIVITY_TYPE_GOLF, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"RockClimbing":      {typ: cairnv1.ActivityType_ACTIVITY_TYPE_CLIMB, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"InlineSkate":       {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKATE, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"IceSkate":          {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKATE, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Skateboard":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_SKATE, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Elliptical":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_ELLIPTICAL, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Wheelchair":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_WHEELCHAIR, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Handcycle":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_WHEELCHAIR, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Tennis":            {typ: cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Pickleball":        {typ: cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Squash":            {typ: cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Badminton":         {typ: cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"Racquetball":       {typ: cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
+	"TableTennis":       {typ: cairnv1.ActivityType_ACTIVITY_TYPE_TENNIS, discipline: cairnv1.Discipline_DISCIPLINE_UNSPECIFIED},
 }
 
 // workoutTypeIsRace decodes Strava's `workout_type`. Ride: 11=race. Run: 1=race.
@@ -302,8 +266,8 @@ func mapSegmentEffortToProto(e *stravaSegmentEffort) *workerv1.SegmentEffortImpo
 		StartTime:       timestamppb.New(parseStravaTime(e.StartDate)),
 		Elapsed:         durationpb.New(time.Duration(e.ElapsedTime) * time.Second),
 		Moving:          durationpb.New(time.Duration(e.MovingTime) * time.Second),
-		StartOffset:     int32(e.StartIndex),
-		EndOffset:       int32(e.EndIndex),
+		StartOffset:     clampI32(e.StartIndex),
+		EndOffset:       clampI32(e.EndIndex),
 		AvgHeartRateBpm: optI32FromFloat(e.AverageHeartrate),
 		MaxHeartRateBpm: optI32FromFloat(e.MaxHeartrate),
 		AvgPowerW:       optI32FromFloat(e.AverageWatts),
@@ -396,7 +360,7 @@ func mapSummary(a *stravaActivity) *cairnv1.ActivitySummary {
 		s.AvgPowerW = i32p(int32(a.AverageWatts))
 	}
 	if a.MaxWatts > 0 {
-		s.MaxPowerW = i32p(int32(a.MaxWatts))
+		s.MaxPowerW = i32p(clampI32(a.MaxWatts))
 	}
 	if a.WeightedAverageWatts > 0 {
 		s.NormalizedPowerW = i32p(int32(a.WeightedAverageWatts))
@@ -419,6 +383,24 @@ func mapSummary(a *stravaActivity) *cairnv1.ActivitySummary {
 // ---------------------------------------------------------------------------
 // Column builders + small helpers
 // ---------------------------------------------------------------------------
+
+// latLngCols splits Strava's [lat, lon] pairs into dense columns of length n.
+func latLngCols(streams stravaStreamsResponse, n int) (lat, lon []float64) {
+	ch, ok := streams["latlng"]
+	if !ok {
+		return nil, nil
+	}
+	var latlngs [][2]float64
+	if json.Unmarshal(ch.Data, &latlngs) != nil || len(latlngs) == 0 {
+		return nil, nil
+	}
+	lat = make([]float64, n)
+	lon = make([]float64, n)
+	for i := 0; i < n && i < len(latlngs); i++ {
+		lat[i], lon[i] = latlngs[i][0], latlngs[i][1]
+	}
+	return lat, lon
+}
 
 // floatCol decodes a Strava float column to a dense []float64 of length n.
 func floatCol(streams stravaStreamsResponse, key string, n int) []float64 {
@@ -455,7 +437,12 @@ func intCol(streams stravaStreamsResponse, key string, n int) []int32 {
 }
 
 func f64p(v float64) *float64 { return &v }
-func i32p(v int32) *int32     { return &v }
+
+// clampI32 narrows v to int32, saturating instead of wrapping.
+func clampI32(v int) int32 {
+	return int32(min(max(v, math.MinInt32), math.MaxInt32)) //nolint:gosec // G115: clamped to the int32 range
+}
+func i32p(v int32) *int32 { return &v }
 
 // formatActivityID renders a Strava activity id as a string external_id.
 func formatActivityID(id int64) string {

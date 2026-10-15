@@ -1,0 +1,17 @@
+# The build needs go.mod, go.sum, the Go sources and .git: go build stamps
+# vcs.revision/vcs.time, which the presence heartbeat reports. .git stays in
+# the discarded build stage; only the binary reaches the runtime image.
+.github
+.env
+.env.*
+*.out
+*.test
+/worker-strava
+/out/
+cover.out
+docs/
+scripts/
+*.md
+.claude/
+.idea/
+.vscode/

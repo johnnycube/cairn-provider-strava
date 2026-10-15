@@ -40,8 +40,8 @@ func fetchActivityAttachments(ctx context.Context, w *workersdk.Worker, client *
 			continue
 		}
 		att.Caption = p.Caption
-		att.Width = int32(width)
-		att.Height = int32(height)
+		att.Width = clampI32(width)
+		att.Height = clampI32(height)
 		out = append(out, att)
 	}
 	return out

@@ -2,11 +2,13 @@ package nats
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/johnnycube/cairn-provider-strava/internal/inmem"
+	"github.com/johnnycube/cairn-provider-strava/internal/port"
 )
 
 // helper: spin up an inmem KV bucket and a rate-limiter on top.
@@ -252,5 +254,96 @@ func TestCASBackoff_Bounded(t *testing.T) {
 		if d < 0 || d > 20*time.Millisecond {
 			t.Fatalf("casBackoff(%d) = %v out of [0,20ms]", attempt, d)
 		}
+	}
+}
+
+func TestSyncUsage_OverridesCapacityAndUsage(t *testing.T) {
+	rl := newTestLimiter(t, map[string]int{"strava:short": 100})
+	ctx := context.Background()
+	reset := time.Now().Add(10 * time.Minute)
+
+	if err := rl.SyncUsage(ctx, "strava:short", 0, 0, reset); err != nil {
+		t.Fatalf("zero limit: %v", err)
+	}
+	if err := rl.SyncUsage(ctx, "strava:short", -3, 2, reset); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if ok, _, err := rl.Reserve(ctx, "strava:short", 1); !ok || err != nil {
+			t.Fatalf("reserve %d = %v, %v", i, ok, err)
+		}
+	}
+	if err := rl.SyncUsage(ctx, "strava:short", 2, 2, reset); err != nil {
+		t.Fatal(err)
+	}
+	ok, retry, err := rl.Reserve(ctx, "strava:short", 1)
+	if ok || err != nil || retry <= 0 {
+		t.Fatalf("reserve after sync = %v, %v, %v; want denied", ok, retry, err)
+	}
+	if ok, _, _ := rl.Reserve(ctx, "strava:short", 0); !ok {
+		t.Error("zero-token reserve must be granted")
+	}
+}
+
+func TestReadState_MalformedAndEmptyEntries(t *testing.T) {
+	rl := newTestLimiter(t, map[string]int{"x:daily": 5})
+	ctx := context.Background()
+	if _, err := rl.kv.Put(ctx, kvKey("x:daily"), []byte("{not json")); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := rl.Reserve(ctx, "x:daily", 1); !ok || err != nil {
+		t.Fatalf("malformed state must reset: %v, %v", ok, err)
+	}
+	if _, err := rl.kv.Put(ctx, kvKey("x:daily"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := rl.Reserve(ctx, "x:daily", 1); !ok || err != nil {
+		t.Fatalf("empty state must reset: %v, %v", ok, err)
+	}
+	if got := windowFor("x:daily"); got != 24*time.Hour {
+		t.Errorf("windowFor daily = %v", got)
+	}
+	if got := windowFor("x:custom"); got != 15*time.Minute {
+		t.Errorf("windowFor default = %v", got)
+	}
+}
+
+// failingKV errors on every call.
+type failingKV struct{}
+
+func (failingKV) Get(context.Context, string) (port.KVEntry, error) {
+	return port.KVEntry{}, errors.New("kv down")
+}
+
+func (failingKV) Put(context.Context, string, []byte) (uint64, error) {
+	return 0, errors.New("kv down")
+}
+
+func (failingKV) CompareAndSet(context.Context, string, []byte, uint64) (uint64, bool, error) {
+	return 0, false, errors.New("kv down")
+}
+
+// casFailKV reads empty but fails every write.
+type casFailKV struct{ failingKV }
+
+func (casFailKV) Get(context.Context, string) (port.KVEntry, error) {
+	return port.KVEntry{}, port.ErrKVKeyNotFound
+}
+
+func TestRateLimiter_KVErrorsSurface(t *testing.T) {
+	ctx := context.Background()
+	rl := NewRateLimiter(failingKV{}, map[string]int{"s:short": 1})
+	if _, _, err := rl.Reserve(ctx, "s:short", 1); err == nil {
+		t.Error("reserve: want read error")
+	}
+	if err := rl.ForceRefill(ctx, "s:short", 1, time.Now()); err == nil {
+		t.Error("force refill: want put error")
+	}
+	if err := rl.SyncUsage(ctx, "s:short", 1, 2, time.Now()); err == nil {
+		t.Error("sync usage: want put error")
+	}
+	rl = NewRateLimiter(casFailKV{}, map[string]int{"s:short": 1})
+	if _, _, err := rl.Reserve(ctx, "s:short", 1); err == nil {
+		t.Error("reserve: want cas error")
 	}
 }

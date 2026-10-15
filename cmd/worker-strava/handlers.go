@@ -18,7 +18,6 @@ import (
 	natsadapter "github.com/johnnycube/cairn-provider-strava/internal/nats"
 	"github.com/johnnycube/cairn-provider-strava/internal/port"
 	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
-	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
 	workerv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
@@ -249,57 +248,61 @@ func makeDiscoverHandler(w *workersdk.Worker, client *stravaClient) port.Request
 		if err != nil {
 			return json.Marshal(discoverResponse{Error: err.Error()})
 		}
+		return json.Marshal(discoverPages(ctx, w, client, token.AccessToken, max(req.StartPage, 1)))
+	}
+}
 
-		start := req.StartPage
-		if start < 1 {
-			start = 1
+// discoverPages walks up to discoverMaxPagesPerCall listing pages from start.
+func discoverPages(ctx context.Context, w *workersdk.Worker, client *stravaClient, accessToken string, start int) discoverResponse {
+	const perPage = 200
+	var items []discoverItem
+	for i := 0; ; i++ {
+		page := start + i
+		if err := reserveRead(ctx, w, "strava:short"); err != nil {
+			return discoverReserveFailed(items, page, err)
 		}
-		const perPage = 200
-		var items []discoverItem
-		for i := 0; ; i++ {
-			page := start + i
-			if err := reserveRead(ctx, w, "strava:short"); err != nil {
-				var nak *port.NakWithDelayError
-				if errors.As(err, &nak) {
-					// On the very first page with nothing yet, surface a clean
-					// error so a preview shows "try again shortly".
-					if len(items) == 0 && page == 1 {
-						return json.Marshal(discoverResponse{Error: "rate_limited: provider budget exhausted, try again shortly"})
-					}
-					return json.Marshal(discoverResponse{Items: items, NextPage: page, RateLimited: true})
-				}
-				if len(items) == 0 {
-					return json.Marshal(discoverResponse{Error: err.Error()})
-				}
-				return json.Marshal(discoverResponse{Items: items, NextPage: page, RateLimited: true})
+		sums, err := client.ListAthleteActivities(ctx, accessToken, 0, page, perPage)
+		if err != nil {
+			if len(items) == 0 {
+				return discoverResponse{Error: err.Error()}
 			}
-			sums, err := client.ListAthleteActivities(ctx, token.AccessToken, 0, page, perPage)
-			if err != nil {
-				if len(items) == 0 {
-					return json.Marshal(discoverResponse{Error: err.Error()})
-				}
-				// Transient mid-batch error: hand back what we have and let the
-				// server retry from this page.
-				return json.Marshal(discoverResponse{Items: items, NextPage: page})
-			}
-			// Empty page = end of data. This is the ONLY stop condition — a
-			// short (<200) page is NOT the last page on Strava.
-			if len(sums) == 0 {
-				return json.Marshal(discoverResponse{Items: items, Complete: true})
-			}
-			for _, s := range sums {
-				items = append(items, discoverItem{
-					ItemType:   "activity",
-					ExternalID: formatActivityID(s.ID),
-					ItemTime:   s.StartDate,
-				})
-			}
-			if i+1 >= discoverMaxPagesPerCall {
-				// Batch boundary (not rate-limited) — server requests NextPage
-				// immediately.
-				return json.Marshal(discoverResponse{Items: items, NextPage: page + 1})
-			}
+			// Transient mid-batch error: hand back what we have and let the
+			// server retry from this page.
+			return discoverResponse{Items: items, NextPage: page}
 		}
+		// Empty page = end of data. This is the ONLY stop condition — a
+		// short (<200) page is NOT the last page on Strava.
+		if len(sums) == 0 {
+			return discoverResponse{Items: items, Complete: true}
+		}
+		for _, s := range sums {
+			items = append(items, discoverItem{
+				ItemType:   "activity",
+				ExternalID: formatActivityID(s.ID),
+				ItemTime:   s.StartDate,
+			})
+		}
+		if i+1 >= discoverMaxPagesPerCall {
+			// Batch boundary (not rate-limited) — server requests NextPage
+			// immediately.
+			return discoverResponse{Items: items, NextPage: page + 1}
+		}
+	}
+}
+
+// discoverReserveFailed answers a discover call whose budget reservation failed.
+func discoverReserveFailed(items []discoverItem, page int, err error) discoverResponse {
+	var nak *port.NakWithDelayError
+	rateLimited := errors.As(err, &nak)
+	switch {
+	case rateLimited && len(items) == 0 && page == 1:
+		// On the very first page with nothing yet, surface a clean error so a
+		// preview shows "try again shortly".
+		return discoverResponse{Error: "rate_limited: provider budget exhausted, try again shortly"}
+	case !rateLimited && len(items) == 0:
+		return discoverResponse{Error: err.Error()}
+	default:
+		return discoverResponse{Items: items, NextPage: page, RateLimited: true}
 	}
 }
 
@@ -399,136 +402,39 @@ func fetchSourceOnce(ctx context.Context, w *workersdk.Worker, cfg workerConfig,
 		return mapStravaErr(ctx, w, cfg, job, in, err, "fetch_activity")
 	}
 
-	// Streams are optional. Most ingests want them; the reconcile
-	// path skips them by setting FetchStreams=false (the per-
-	// activity fetch will pull them on the user's first detail view).
-	var protoStream *cairnv1.ActivityStream
-	var rawStreams stravaStreamsResponse
-	if in.FetchStreams {
-		if err := reserveRead(ctx, w, bucket); err != nil {
-			return err
-		}
-		streams, err := client.GetActivityStreams(ctx, token.AccessToken, in.ExtID)
-		if err != nil {
-			// Streams 404 is non-fatal — Strava returns 404 when the
-			// activity has no GPS or stream data at all. Continue
-			// without streams.
-			if !errors.Is(err, ErrStravaNotFound) {
-				return mapStravaErr(ctx, w, cfg, job, in, err, "fetch_streams")
-			}
-			streams = nil
-		}
-		rawStreams = streams
-		protoStream = mapStreamsToProto(streams)
+	rawStreams, err := fetchStreams(ctx, w, cfg, client, job, in, token.AccessToken, bucket)
+	if err != nil {
+		return err
 	}
 
-	payload := mapActivityToPayload(activity)
+	imported := &workerv1.ImportedActivity{
+		Ref:     externalRef(in, in.ExtID),
+		Payload: mapActivityToPayload(activity),
+		Stream:  mapStreamsToProto(rawStreams),
+	}
 
 	// Archive the raw fetched JSON (+streams) so this source can later be
 	// re-parsed (or re-downloaded by the user) WITHOUT spending provider API
 	// budget. Best-effort: a failure (no blob store, presign timeout) leaves
 	// raw_blob_id empty — the import is durable regardless.
-	rawBlobID := ""
-	rawContentType := ""
-	var rawSizeBytes int64
 	if id, size, aerr := archiveActivityBlob(ctx, w, cfg, in.UserID, activity, rawStreams); aerr != nil {
 		w.Logger().Warn("archive activity blob failed", "ext_id", in.ExtID, "error", aerr)
 	} else {
-		rawBlobID, rawContentType, rawSizeBytes = id, "application/json", size
-	}
-
-	ref := func(extID string) *workerv1.ExternalRef {
-		return &workerv1.ExternalRef{
-			UserId:            in.UserID,
-			Provider:          workerProvider,
-			ExternalAccountId: in.AccountID,
-			ExternalId:        extID,
-		}
+		imported.RawBlobId, imported.RawContentType, imported.RawSizeBytes = id, "application/json", size
 	}
 
 	// Mirror the activity's photos into blob storage so Cairn owns the bytes
 	// (Strava photo URLs are short-lived CDN links). Best-effort.
-	attachments := fetchActivityAttachments(ctx, w, client, token.AccessToken, bucket, in.UserID, in.ExtID, activity)
+	imported.Attachments = fetchActivityAttachments(ctx, w, client, token.AccessToken, bucket, in.UserID, in.ExtID, activity)
 
 	activityEvent := &workerv1.WorkerEvent{
-		Type: workerv1.WorkerEventType_WORKER_EVENT_TYPE_ACTIVITY,
-		Entity: &workerv1.WorkerEvent_Activity{Activity: &workerv1.ImportedActivity{
-			Ref:            ref(in.ExtID),
-			Payload:        payload,
-			Stream:         protoStream,
-			RawBlobId:      rawBlobID,
-			RawContentType: rawContentType,
-			RawSizeBytes:   rawSizeBytes,
-			Attachments:    attachments,
-		}},
+		Type:   workerv1.WorkerEventType_WORKER_EVENT_TYPE_ACTIVITY,
+		Entity: &workerv1.WorkerEvent_Activity{Activity: imported},
 	}
 
-	// Segments + efforts. Contract order is segments → activity → efforts, so
-	// the bundle is self-contained (efforts resolve against segments emitted
-	// just before). Each unique segment's geometry is fetched once (cached)
-	// and ReserveAPI-throttled. A rate limit mid-loop must NOT fail the
-	// activity: stop fetching, publish the activity + what we have, and
-	// NAK-with-delay the job so a retry after the window completes the
-	// remaining segments (cache hits make the retry cheap).
-	var segRetryAfter time.Duration
-	var segmentEvents, effortEvents []*workerv1.WorkerEvent
+	var segs segmentBatch
 	if in.FetchStreams {
-		emitted := map[string]bool{}
-		for i := range activity.SegmentEfforts {
-			eff := &activity.SegmentEfforts[i]
-			segExtID := formatActivityID(eff.Segment.ID)
-
-			seg, ok := segCache.get(segExtID)
-			if !ok {
-				if err := reserveRead(ctx, w, bucket); err != nil {
-					var nak *port.NakWithDelayError
-					if errors.As(err, &nak) {
-						segRetryAfter = nak.Delay
-					}
-					break // budget exhausted; retry completes the rest
-				}
-				detail, err := client.GetSegment(ctx, token.AccessToken, segExtID)
-				if err != nil {
-					var rl *StravaRateLimitError
-					if errors.As(err, &rl) {
-						// Sync the limiter and stop — hammering the
-						// remaining segments would just 429 too.
-						segRetryAfter = observe429(ctx, w, rl)
-						w.Logger().Info("segment fetch rate-limited; deferring rest",
-							"segment", segExtID, "retry_in", segRetryAfter)
-						break
-					}
-					w.Logger().Warn("segment fetch failed", "segment", segExtID, "error", err)
-					continue
-				}
-				if detail.Map.Polyline == "" {
-					w.Logger().Warn("segment has no polyline; skipping", "segment", segExtID)
-					continue
-				}
-				seg = mapSegmentToProto(detail)
-				segCache.put(segExtID, seg)
-			}
-
-			if !emitted[segExtID] {
-				emitted[segExtID] = true
-				segmentEvents = append(segmentEvents, &workerv1.WorkerEvent{
-					Type: workerv1.WorkerEventType_WORKER_EVENT_TYPE_SEGMENT,
-					Entity: &workerv1.WorkerEvent_Segment{Segment: &workerv1.ImportedSegment{
-						Ref:     ref(segExtID),
-						Payload: seg,
-					}},
-				})
-			}
-			effortEvents = append(effortEvents, &workerv1.WorkerEvent{
-				Type: workerv1.WorkerEventType_WORKER_EVENT_TYPE_SEGMENT_EFFORT,
-				Entity: &workerv1.WorkerEvent_SegmentEffort{SegmentEffort: &workerv1.ImportedSegmentEffort{
-					Ref:                ref(formatActivityID(eff.ID)),
-					ActivityExternalId: in.ExtID,
-					SegmentExternalId:  segExtID,
-					Payload:            mapSegmentEffortToProto(eff),
-				}},
-			})
-		}
+		segs = collectSegments(ctx, w, client, segCache, token.AccessToken, bucket, in, activity)
 	}
 
 	// Publish the activity (+stream) on its own, claim-checked through the
@@ -539,40 +445,167 @@ func fetchSourceOnce(ctx context.Context, w *workersdk.Worker, cfg workerConfig,
 	// delivery and must not be swallowed by the stream's dedup window
 	// (ingest dedups idempotently).
 	msgID := fmt.Sprintf("result:%s:d%d", in.JobID, job.DeliveryAttempt)
-	if err := publishResultViaBlob(ctx, w, job, msgID, &workerv1.JobResult{
-		WorkerName:    cfg.WorkerName,
-		WorkerVersion: workerVersion,
-		WorkerPackage: workerPackage,
-		Events:        []*workerv1.WorkerEvent{activityEvent},
-	}); err != nil {
+	if err := publishResultViaBlob(ctx, w, job, msgID, newJobResult(cfg, activityEvent)); err != nil {
 		return err
 	}
 
-	// Segments + efforts go in a separate result. The server resolves each
-	// effort's activity by external id, so this message is self-contained.
-	// Best-effort: the activity is already durable, and a failed/dropped
-	// segment batch is re-emitted on the next import.
-	if len(segmentEvents) > 0 {
-		if perr := publishResultViaBlob(ctx, w, job, msgID+":seg", &workerv1.JobResult{
-			WorkerName:    cfg.WorkerName,
-			WorkerVersion: workerVersion,
-			WorkerPackage: workerPackage,
-			Events:        append(segmentEvents, effortEvents...),
-		}); perr != nil {
-			w.Logger().Warn("segment result publish failed", "error", perr)
-		} else {
-			w.Logger().Info("published segments", "count", len(segmentEvents), "efforts", len(effortEvents))
-		}
-	}
+	publishSegments(ctx, w, cfg, job, msgID+":seg", segs)
 
 	// Rate-limited mid-segments: the activity above is durable; retry the
 	// job after the window so the remaining segments complete. Cached
 	// segments make the retry pass cheap (refetch of the activity + streams
 	// is the unavoidable cost of completing it).
-	if segRetryAfter > 0 {
-		return &port.NakWithDelayError{Reason: "rate_limited_segments", Delay: segRetryAfter}
+	if segs.retryAfter > 0 {
+		return &port.NakWithDelayError{Reason: "rate_limited_segments", Delay: segs.retryAfter}
 	}
 	return nil
+}
+
+// fetchStreams pulls the activity's streams. They are optional: the reconcile
+// path skips them by setting FetchStreams=false (the per-activity fetch pulls
+// them on the user's first detail view), and Strava returns 404 when the
+// activity has no GPS or stream data at all.
+func fetchStreams(ctx context.Context, w *workersdk.Worker, cfg workerConfig, client *stravaClient, job workersdk.Job, in fetchSourceJob, accessToken, bucket string) (stravaStreamsResponse, error) {
+	if !in.FetchStreams {
+		return nil, nil
+	}
+	if err := reserveRead(ctx, w, bucket); err != nil {
+		return nil, err
+	}
+	streams, err := client.GetActivityStreams(ctx, accessToken, in.ExtID)
+	switch {
+	case errors.Is(err, ErrStravaNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, mapStravaErr(ctx, w, cfg, job, in, err, "fetch_streams")
+	}
+	return streams, nil
+}
+
+// externalRef builds the ref for one entity of the job's account.
+func externalRef(in fetchSourceJob, extID string) *workerv1.ExternalRef {
+	return &workerv1.ExternalRef{
+		UserId:            in.UserID,
+		Provider:          workerProvider,
+		ExternalAccountId: in.AccountID,
+		ExternalId:        extID,
+	}
+}
+
+// newJobResult stamps events with this worker's identity.
+func newJobResult(cfg workerConfig, events ...*workerv1.WorkerEvent) *workerv1.JobResult {
+	return &workerv1.JobResult{
+		WorkerName:    cfg.WorkerName,
+		WorkerVersion: workerVersion,
+		WorkerPackage: workerPackage,
+		Events:        events,
+	}
+}
+
+// segmentBatch is the segments and efforts of one activity, plus how long to
+// wait before retrying when a rate limit cut the collection short.
+type segmentBatch struct {
+	segments   []*workerv1.WorkerEvent
+	efforts    []*workerv1.WorkerEvent
+	retryAfter time.Duration
+}
+
+// collectSegments builds segment and effort events. Contract order is
+// segments → activity → efforts, so the bundle is self-contained (efforts
+// resolve against segments emitted just before). Each unique segment's
+// geometry is fetched once (cached) and ReserveAPI-throttled. A rate limit
+// mid-loop must NOT fail the activity: stop fetching, return what we have,
+// and let the caller NAK-with-delay so a retry after the window completes
+// the remaining segments (cache hits make the retry cheap).
+func collectSegments(ctx context.Context, w *workersdk.Worker, client *stravaClient, segCache *segmentCache, accessToken, bucket string, in fetchSourceJob, activity *stravaActivity) segmentBatch {
+	var out segmentBatch
+	emitted := map[string]bool{}
+	for i := range activity.SegmentEfforts {
+		eff := &activity.SegmentEfforts[i]
+		segExtID := formatActivityID(eff.Segment.ID)
+
+		seg, stop, retryAfter := resolveSegment(ctx, w, client, segCache, accessToken, bucket, segExtID)
+		if stop {
+			out.retryAfter = retryAfter
+			break // budget exhausted; retry completes the rest
+		}
+		if seg == nil {
+			continue
+		}
+
+		if !emitted[segExtID] {
+			emitted[segExtID] = true
+			out.segments = append(out.segments, &workerv1.WorkerEvent{
+				Type: workerv1.WorkerEventType_WORKER_EVENT_TYPE_SEGMENT,
+				Entity: &workerv1.WorkerEvent_Segment{Segment: &workerv1.ImportedSegment{
+					Ref:     externalRef(in, segExtID),
+					Payload: seg,
+				}},
+			})
+		}
+		out.efforts = append(out.efforts, &workerv1.WorkerEvent{
+			Type: workerv1.WorkerEventType_WORKER_EVENT_TYPE_SEGMENT_EFFORT,
+			Entity: &workerv1.WorkerEvent_SegmentEffort{SegmentEffort: &workerv1.ImportedSegmentEffort{
+				Ref:                externalRef(in, formatActivityID(eff.ID)),
+				ActivityExternalId: in.ExtID,
+				SegmentExternalId:  segExtID,
+				Payload:            mapSegmentEffortToProto(eff),
+			}},
+		})
+	}
+	return out
+}
+
+// resolveSegment returns a segment's geometry from the cache or the API. A nil
+// segment without stop means skip this one; stop means the budget ran out.
+func resolveSegment(ctx context.Context, w *workersdk.Worker, client *stravaClient, segCache *segmentCache, accessToken, bucket, segExtID string) (seg *workerv1.SegmentImport, stop bool, retryAfter time.Duration) {
+	if seg, ok := segCache.get(segExtID); ok {
+		return seg, false, 0
+	}
+	if err := reserveRead(ctx, w, bucket); err != nil {
+		var nak *port.NakWithDelayError
+		if errors.As(err, &nak) {
+			retryAfter = nak.Delay
+		}
+		return nil, true, retryAfter
+	}
+	detail, err := client.GetSegment(ctx, accessToken, segExtID)
+	if err != nil {
+		var rl *StravaRateLimitError
+		if errors.As(err, &rl) {
+			// Sync the limiter and stop — hammering the remaining segments
+			// would just 429 too.
+			retryAfter = observe429(ctx, w, rl)
+			w.Logger().Info("segment fetch rate-limited; deferring rest",
+				"segment", segExtID, "retry_in", retryAfter)
+			return nil, true, retryAfter
+		}
+		w.Logger().Warn("segment fetch failed", "segment", segExtID, "error", err)
+		return nil, false, 0
+	}
+	if detail.Map.Polyline == "" {
+		w.Logger().Warn("segment has no polyline; skipping", "segment", segExtID)
+		return nil, false, 0
+	}
+	seg = mapSegmentToProto(detail)
+	segCache.put(segExtID, seg)
+	return seg, false, 0
+}
+
+// publishSegments sends segments + efforts as a separate result. The server
+// resolves each effort's activity by external id, so this message is
+// self-contained. Best-effort: the activity is already durable, and a
+// failed/dropped segment batch is re-emitted on the next import.
+func publishSegments(ctx context.Context, w *workersdk.Worker, cfg workerConfig, job workersdk.Job, msgID string, segs segmentBatch) {
+	if len(segs.segments) == 0 {
+		return
+	}
+	events := append(segs.segments, segs.efforts...)
+	if err := publishResultViaBlob(ctx, w, job, msgID, newJobResult(cfg, events...)); err != nil {
+		w.Logger().Warn("segment result publish failed", "error", err)
+		return
+	}
+	w.Logger().Info("published segments", "count", len(segs.segments), "efforts", len(segs.efforts))
 }
 
 // mapStravaErr translates a Strava-client error into the workersdk
@@ -667,20 +700,9 @@ func makeParseBlobHandler(cfg workerConfig) func(context.Context, *workersdk.Wor
 			return &port.TerminalError{Reason: "bad_payload", Cause: err}
 		}
 
-		// Resolve a usable download URL: re-presign from the stored blob key
-		// (fallback_handle == raw_blob_id) if none was supplied or it expired.
-		url := in.Blob.URL
-		if url == "" || (!in.Blob.ExpiresAt.IsZero() && time.Now().After(in.Blob.ExpiresAt)) {
-			if in.Blob.FallbackHandle == "" {
-				return &port.TerminalError{Reason: "no_blob_handle"}
-			}
-			fresh, err := w.PresignDownload(ctx, workersdk.PresignDownloadRequest{
-				BlobID: in.Blob.FallbackHandle,
-			})
-			if err != nil {
-				return fmt.Errorf("refresh presign: %w", err) // transient → NAK
-			}
-			url = fresh.URL
+		url, err := blobDownloadURL(ctx, w, in)
+		if err != nil {
+			return err
 		}
 
 		arch, err := downloadArchivedActivity(ctx, url)
@@ -711,13 +733,27 @@ func makeParseBlobHandler(cfg workerConfig) func(context.Context, *workersdk.Wor
 			}},
 		}
 
-		return publishResultViaBlob(ctx, w, job, "result:"+in.JobID, &workerv1.JobResult{
-			WorkerName:    cfg.WorkerName,
-			WorkerVersion: workerVersion,
-			WorkerPackage: workerPackage,
-			Events:        []*workerv1.WorkerEvent{ev},
-		})
+		return publishResultViaBlob(ctx, w, job, "result:"+in.JobID, newJobResult(cfg, ev))
 	}
+}
+
+// blobDownloadURL resolves a usable download URL: it re-presigns from the
+// stored blob key (fallback_handle == raw_blob_id) if none was supplied or it
+// expired.
+func blobDownloadURL(ctx context.Context, w *workersdk.Worker, in parseBlobJob) (string, error) {
+	if in.Blob.URL != "" && (in.Blob.ExpiresAt.IsZero() || !time.Now().After(in.Blob.ExpiresAt)) {
+		return in.Blob.URL, nil
+	}
+	if in.Blob.FallbackHandle == "" {
+		return "", &port.TerminalError{Reason: "no_blob_handle"}
+	}
+	fresh, err := w.PresignDownload(ctx, workersdk.PresignDownloadRequest{
+		BlobID: in.Blob.FallbackHandle,
+	})
+	if err != nil {
+		return "", fmt.Errorf("refresh presign: %w", err) // transient → NAK
+	}
+	return fresh.URL, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -736,87 +772,116 @@ type backfillJob struct {
 
 func makeBackfillHandler(cfg workerConfig, client *stravaClient) func(context.Context, *workersdk.Worker, workersdk.Job) error {
 	return func(ctx context.Context, w *workersdk.Worker, job workersdk.Job) error {
-		var in backfillJob
-		if err := json.Unmarshal(job.Body, &in); err != nil {
-			return &port.TerminalError{Reason: "bad_payload", Cause: err}
-		}
+		return runBackfill(ctx, w, cfg, client, job)
+	}
+}
 
-		token, err := w.FetchToken(ctx, in.AccountID)
-		if err != nil {
+func runBackfill(ctx context.Context, w *workersdk.Worker, cfg workerConfig, client *stravaClient, job workersdk.Job) error {
+	var in backfillJob
+	if err := json.Unmarshal(job.Body, &in); err != nil {
+		return &port.TerminalError{Reason: "bad_payload", Cause: err}
+	}
+
+	token, err := w.FetchToken(ctx, in.AccountID)
+	if err != nil {
+		return err
+	}
+
+	perPage := in.PageSize
+	if perPage <= 0 || perPage > 200 {
+		perPage = 100
+	}
+	var after int64
+	if in.Since != nil {
+		after = in.Since.Unix()
+	}
+
+	enqueued, err := backfillEnqueue(ctx, w, client, in, token.AccessToken, after, perPage)
+	if err != nil {
+		return listErr(ctx, w, cfg, job, in.AccountID, in.UserID, err, "list_activities")
+	}
+
+	// Backfill enqueues per-activity fetch_source sub-jobs; the result
+	// itself carries no data events, just the worker stamp.
+	w.Logger().Info("backfill enqueued fetch_source jobs", "account_id", in.AccountID, "enqueued", enqueued)
+	body, err := protojson.Marshal(newJobResult(cfg))
+	if err != nil {
+		return &port.TerminalError{Reason: "marshal_result", Cause: err}
+	}
+	return w.PublishResult(ctx, job, "result:"+in.JobID, body)
+}
+
+// backfillEnqueue fans out a fetch_source job per listed activity, up to
+// MaxActivities when set.
+func backfillEnqueue(ctx context.Context, w *workersdk.Worker, client *stravaClient, in backfillJob, accessToken string, after int64, perPage int) (int, error) {
+	var enqueued int
+	err := listActivityPages(ctx, w, client, accessToken, after, perPage, func(summaries []stravaActivitySummary) (bool, error) {
+		for _, s := range summaries {
+			if err := enqueueFetchSource(ctx, w, in.JobID, in.AccountID, in.UserID, "backfill", formatActivityID(s.ID)); err != nil {
+				return false, fmt.Errorf("enqueue fetch_source %d: %w", s.ID, err)
+			}
+			enqueued++
+			if in.MaxActivities > 0 && enqueued >= in.MaxActivities {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	return enqueued, err
+}
+
+// activityListError marks a failed listing call so callers can map it.
+type activityListError struct{ err error }
+
+func (e *activityListError) Error() string { return e.err.Error() }
+func (e *activityListError) Unwrap() error { return e.err }
+
+// listActivityPages walks the athlete's activities page by page until an
+// empty or short page, or until visit reports no more. Listing failures come
+// back as *activityListError; reserve and visit errors pass through.
+func listActivityPages(ctx context.Context, w *workersdk.Worker, client *stravaClient, accessToken string, after int64, perPage int, visit func([]stravaActivitySummary) (more bool, err error)) error {
+	for page := 1; ; page++ {
+		if err := reserveRead(ctx, w, "strava:short"); err != nil {
 			return err
 		}
-
-		perPage := in.PageSize
-		if perPage <= 0 || perPage > 200 {
-			perPage = 100
-		}
-		var after int64
-		if in.Since != nil {
-			after = in.Since.Unix()
-		}
-
-		var enqueued int
-		page := 1
-		for {
-			if err := reserveRead(ctx, w, "strava:short"); err != nil {
-				return err
-			}
-			summaries, err := client.ListAthleteActivities(ctx, token.AccessToken, after, page, perPage)
-			if err != nil {
-				return mapStravaErr(ctx, w, cfg, job, fetchSourceJob{
-					AccountID: in.AccountID,
-					UserID:    in.UserID,
-				}, err, "list_activities")
-			}
-			if len(summaries) == 0 {
-				break
-			}
-
-			for _, s := range summaries {
-				fetchBody, _ := json.Marshal(fetchSourceJob{
-					JobID:        in.JobID + ":" + formatActivityID(s.ID),
-					AccountID:    in.AccountID,
-					UserID:       in.UserID,
-					Provider:     workerProvider,
-					ExtID:        formatActivityID(s.ID),
-					FetchStreams: true,
-					Reason:       "backfill",
-				})
-				// Deterministic msg-id collapses duplicate enqueues within
-				// JetStream's dedup window.
-				msgID := "backfill:" + workerProvider + ":" + in.AccountID + ":" + formatActivityID(s.ID)
-				if err := w.Enqueue(ctx, subjFetchSource, msgID, fetchBody); err != nil {
-					return fmt.Errorf("enqueue fetch_source %d: %w", s.ID, err)
-				}
-				enqueued++
-				if in.MaxActivities > 0 && enqueued >= in.MaxActivities {
-					break
-				}
-			}
-
-			if len(summaries) < perPage {
-				break
-			}
-			if in.MaxActivities > 0 && enqueued >= in.MaxActivities {
-				break
-			}
-			page++
-		}
-
-		// Backfill enqueues per-activity fetch_source sub-jobs; the result
-		// itself carries no data events, just the worker stamp.
-		w.Logger().Info("backfill enqueued fetch_source jobs", "account_id", in.AccountID, "enqueued", enqueued)
-		result := &workerv1.JobResult{
-			WorkerName:    cfg.WorkerName,
-			WorkerVersion: workerVersion,
-			WorkerPackage: workerPackage,
-		}
-		body, err := protojson.Marshal(result)
+		summaries, err := client.ListAthleteActivities(ctx, accessToken, after, page, perPage)
 		if err != nil {
-			return &port.TerminalError{Reason: "marshal_result", Cause: err}
+			return &activityListError{err: err}
 		}
-		return w.PublishResult(ctx, job, "result:"+in.JobID, body)
+		if len(summaries) == 0 {
+			return nil
+		}
+		more, err := visit(summaries)
+		if err != nil || !more || len(summaries) < perPage {
+			return err
+		}
 	}
+}
+
+// listErr maps a listActivityPages error: listing failures go through
+// mapStravaErr, everything else is returned as is.
+func listErr(ctx context.Context, w *workersdk.Worker, cfg workerConfig, job workersdk.Job, accountID, userID string, err error, op string) error {
+	var le *activityListError
+	if !errors.As(err, &le) {
+		return err
+	}
+	return mapStravaErr(ctx, w, cfg, job, fetchSourceJob{AccountID: accountID, UserID: userID}, le.err, op)
+}
+
+// enqueueFetchSource fans out one fetch_source sub-job. The deterministic
+// msg-id collapses duplicate enqueues within JetStream's dedup window.
+func enqueueFetchSource(ctx context.Context, w *workersdk.Worker, jobID, accountID, userID, reason, extID string) error {
+	body, _ := json.Marshal(fetchSourceJob{
+		JobID:        jobID + ":" + extID,
+		AccountID:    accountID,
+		UserID:       userID,
+		Provider:     workerProvider,
+		ExtID:        extID,
+		FetchStreams: true,
+		Reason:       reason,
+	})
+	msgID := reason + ":" + workerProvider + ":" + accountID + ":" + extID
+	return w.Enqueue(ctx, subjFetchSource, msgID, body)
 }
 
 // ---------------------------------------------------------------------------
@@ -845,113 +910,96 @@ const defaultReconcileMaxEnqueue = 500
 
 func makeReconcileHandler(cfg workerConfig, client *stravaClient) func(context.Context, *workersdk.Worker, workersdk.Job) error {
 	return func(ctx context.Context, w *workersdk.Worker, job workersdk.Job) error {
-		var in reconcileJob
-		if err := json.Unmarshal(job.Body, &in); err != nil {
-			return &port.TerminalError{Reason: "bad_payload", Cause: err}
-		}
-
-		token, err := w.FetchToken(ctx, in.AccountID)
-		if err != nil {
-			return err
-		}
-
-		// Window start = the later of (watermark - 1h drift margin) and the
-		// lookback floor. The 1h margin re-covers activity Strava emitted just
-		// after our last import; the floor guarantees reconcile never tries to
-		// backfill ancient history (that's the import queue's job). Result:
-		// the window is always bounded to recent activity → no flood.
-		windowStart := time.Now().Add(-reconcileLookbackFloor)
-		if in.Watermark != nil {
-			if wm := in.Watermark.Add(-time.Hour); wm.After(windowStart) {
-				windowStart = wm
-			}
-		}
-		after := windowStart.Unix()
-		if after < 0 {
-			after = 0
-		}
-
-		maxEnqueue := in.MaxEnqueue
-		if maxEnqueue <= 0 {
-			maxEnqueue = defaultReconcileMaxEnqueue
-		}
-
-		known := make(map[string]struct{}, len(in.KnownExtIDs))
-		for _, id := range in.KnownExtIDs {
-			known[id] = struct{}{}
-		}
-
-		var newImports int
-		var highWaterMark time.Time
-		if in.Watermark != nil {
-			highWaterMark = *in.Watermark
-		}
-		page := 1
-		const perPage = 100
-		for {
-			if err := reserveRead(ctx, w, "strava:short"); err != nil {
-				return err
-			}
-			summaries, err := client.ListAthleteActivities(ctx, token.AccessToken, after, page, perPage)
-			if err != nil {
-				return mapStravaErr(ctx, w, cfg, job, fetchSourceJob{
-					AccountID: in.AccountID,
-					UserID:    in.UserID,
-				}, err, "reconcile_list")
-			}
-			if len(summaries) == 0 {
-				break
-			}
-
-			for _, s := range summaries {
-				extID := formatActivityID(s.ID)
-				if _, ok := known[extID]; ok {
-					continue
-				}
-				fetchBody, _ := json.Marshal(fetchSourceJob{
-					JobID:        in.JobID + ":" + extID,
-					AccountID:    in.AccountID,
-					UserID:       in.UserID,
-					Provider:     workerProvider,
-					ExtID:        extID,
-					FetchStreams: true,
-					Reason:       "reconcile",
-				})
-				msgID := "reconcile:" + workerProvider + ":" + in.AccountID + ":" + extID
-				if err := w.Enqueue(ctx, subjFetchSource, msgID, fetchBody); err != nil {
-					return fmt.Errorf("enqueue fetch_source: %w", err)
-				}
-				newImports++
-				if t := parseStravaTime(s.StartDate); !t.IsZero() && t.After(highWaterMark) {
-					highWaterMark = t
-				}
-			}
-			if len(summaries) < perPage || newImports >= maxEnqueue {
-				break
-			}
-			page++
-		}
-
-		// Reconcile enqueues fetch_source sub-jobs for missing activities;
-		// the result carries the new high-water-mark watermark. Published on
-		// an ACCOUNT-SUFFIXED subject (cairn.results.reconcile.strava.<acct>)
-		// so the server can attribute the watermark + last_sync_at without the
-		// JobResult wire format carrying an account field. The server MUST see
-		// this even when zero activities were found — advancing last_sync_at
-		// is what stops the scheduler from re-polling every tick.
-		w.Logger().Info("reconcile enqueued fetch_source jobs",
-			"account_id", in.AccountID, "new_imports", newImports, "watermark", highWaterMark)
-		result := &workerv1.JobResult{
-			WorkerName:    cfg.WorkerName,
-			WorkerVersion: workerVersion,
-			WorkerPackage: workerPackage,
-			NewWatermark:  timestamppb.New(highWaterMark),
-		}
-		body, err := protojson.Marshal(result)
-		if err != nil {
-			return &port.TerminalError{Reason: "marshal_result", Cause: err}
-		}
-		subject := "cairn.results.reconcile." + workerProvider + "." + in.AccountID
-		return w.Enqueue(ctx, subject, "result:"+in.JobID, body)
+		return runReconcile(ctx, w, cfg, client, job)
 	}
+}
+
+func runReconcile(ctx context.Context, w *workersdk.Worker, cfg workerConfig, client *stravaClient, job workersdk.Job) error {
+	var in reconcileJob
+	if err := json.Unmarshal(job.Body, &in); err != nil {
+		return &port.TerminalError{Reason: "bad_payload", Cause: err}
+	}
+
+	token, err := w.FetchToken(ctx, in.AccountID)
+	if err != nil {
+		return err
+	}
+
+	newImports, highWaterMark, err := reconcileEnqueue(ctx, w, client, in, token.AccessToken)
+	if err != nil {
+		return listErr(ctx, w, cfg, job, in.AccountID, in.UserID, err, "reconcile_list")
+	}
+
+	// Reconcile enqueues fetch_source sub-jobs for missing activities;
+	// the result carries the new high-water-mark watermark. Published on
+	// an ACCOUNT-SUFFIXED subject (cairn.results.reconcile.strava.<acct>)
+	// so the server can attribute the watermark + last_sync_at without the
+	// JobResult wire format carrying an account field. The server MUST see
+	// this even when zero activities were found — advancing last_sync_at
+	// is what stops the scheduler from re-polling every tick.
+	w.Logger().Info("reconcile enqueued fetch_source jobs",
+		"account_id", in.AccountID, "new_imports", newImports, "watermark", highWaterMark)
+	result := newJobResult(cfg)
+	result.NewWatermark = timestamppb.New(highWaterMark)
+	body, err := protojson.Marshal(result)
+	if err != nil {
+		return &port.TerminalError{Reason: "marshal_result", Cause: err}
+	}
+	subject := "cairn.results.reconcile." + workerProvider + "." + in.AccountID
+	return w.Enqueue(ctx, subject, "result:"+in.JobID, body)
+}
+
+// reconcileEnqueue fans out a fetch_source job per recent activity not in
+// KnownExtIDs and returns the count and the advanced high-water mark.
+func reconcileEnqueue(ctx context.Context, w *workersdk.Worker, client *stravaClient, in reconcileJob, accessToken string) (int, time.Time, error) {
+	maxEnqueue := in.MaxEnqueue
+	if maxEnqueue <= 0 {
+		maxEnqueue = defaultReconcileMaxEnqueue
+	}
+
+	known := make(map[string]struct{}, len(in.KnownExtIDs))
+	for _, id := range in.KnownExtIDs {
+		known[id] = struct{}{}
+	}
+
+	var newImports int
+	var highWaterMark time.Time
+	if in.Watermark != nil {
+		highWaterMark = *in.Watermark
+	}
+	const perPage = 100
+	after := reconcileWindowStart(in.Watermark, time.Now())
+	err := listActivityPages(ctx, w, client, accessToken, after, perPage, func(summaries []stravaActivitySummary) (bool, error) {
+		for _, s := range summaries {
+			extID := formatActivityID(s.ID)
+			if _, ok := known[extID]; ok {
+				continue
+			}
+			if err := enqueueFetchSource(ctx, w, in.JobID, in.AccountID, in.UserID, "reconcile", extID); err != nil {
+				return false, fmt.Errorf("enqueue fetch_source: %w", err)
+			}
+			newImports++
+			if t := parseStravaTime(s.StartDate); !t.IsZero() && t.After(highWaterMark) {
+				highWaterMark = t
+			}
+		}
+		return newImports < maxEnqueue, nil
+	})
+	return newImports, highWaterMark, err
+}
+
+// reconcileWindowStart returns the listing's `after` bound: the later of
+// (watermark - 1h drift margin) and the lookback floor. The 1h margin
+// re-covers activity Strava emitted just after our last import; the floor
+// guarantees reconcile never tries to backfill ancient history (that's the
+// import queue's job). Result: the window is always bounded to recent
+// activity → no flood.
+func reconcileWindowStart(watermark *time.Time, now time.Time) int64 {
+	windowStart := now.Add(-reconcileLookbackFloor)
+	if watermark != nil {
+		if wm := watermark.Add(-time.Hour); wm.After(windowStart) {
+			windowStart = wm
+		}
+	}
+	return max(windowStart.Unix(), 0)
 }

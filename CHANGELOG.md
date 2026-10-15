@@ -4,6 +4,12 @@ All notable changes to the Cairn Strava worker are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
+## [Unreleased]
+
+### Fixed
+- The webhook event loop waits a second after a failed fetch instead of
+  retrying in a tight loop; the job pull loop's wait now ends on shutdown.
+
 ## [0.2.5] — 2026-09-29
 
 ### Changed

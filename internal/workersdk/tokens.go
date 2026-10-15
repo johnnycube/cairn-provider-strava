@@ -222,16 +222,18 @@ func (c *tokenCache) serverGet(ctx context.Context, accountID string) (port.Toke
 	if reply.Error != "" {
 		return port.TokenState{}, OAuthClientCreds{}, mapReplyError(reply.Error, reply.RetryAfter)
 	}
-	return port.TokenState{
-			AccessToken:  reply.AccessToken,
-			RefreshToken: reply.RefreshToken,
-			ExpiresAt:    reply.ExpiresAt,
-			Scope:        reply.Scope,
-			TokenType:    reply.TokenType,
-		}, OAuthClientCreds{
-			ClientID:     reply.ClientID,
-			ClientSecret: reply.ClientSecret,
-		}, nil
+	state := port.TokenState{
+		AccessToken:  reply.AccessToken,
+		RefreshToken: reply.RefreshToken,
+		ExpiresAt:    reply.ExpiresAt,
+		Scope:        reply.Scope,
+		TokenType:    reply.TokenType,
+	}
+	creds := OAuthClientCreds{
+		ClientID:     reply.ClientID,
+		ClientSecret: reply.ClientSecret,
+	}
+	return state, creds, nil
 }
 
 // serverStore returns:
@@ -245,7 +247,7 @@ func (c *tokenCache) serverStore(
 	state port.TokenState,
 	previousExpiresAt time.Time,
 ) (*port.TokenState, error) {
-	body, _ := json.Marshal(tokenStoreRequest{
+	body, _ := json.Marshal(tokenStoreRequest{ //nolint:gosec // G117: the token store RPC exists to carry these tokens
 		AccountID:         accountID,
 		AccessToken:       state.AccessToken,
 		RefreshToken:      state.RefreshToken,

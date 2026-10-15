@@ -95,11 +95,6 @@ func run(cfg workerConfig, logger *slog.Logger) error {
 
 	limiter := newRateLimiter(bus, logger)
 
-	auth, err := NewStravaAuthHandler()
-	if err != nil {
-		return fmt.Errorf("init strava auth: %w", err)
-	}
-
 	w, err := workersdk.New(workersdk.Config{
 		Name:       cfg.WorkerName,
 		InstanceID: cfg.InstanceID,
@@ -108,7 +103,7 @@ func run(cfg workerConfig, logger *slog.Logger) error {
 		Provider:   workerProvider,
 		Bus:        bus,
 		Limiter:    limiter,
-		Auth:       auth,
+		Auth:       NewStravaAuthHandler(),
 		JobStream:  jobStream,
 		Logger:     logger,
 		Manifest:   stravaManifest(),
@@ -118,6 +113,30 @@ func run(cfg workerConfig, logger *slog.Logger) error {
 	}
 
 	client := newStravaClient()
+	registerHandlers(w, cfg, client, logger)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Discovery responder (request/reply): the Core asks what's importable.
+	discSub, err := bus.RespondTo(ctx, subjDiscover, makeDiscoverHandler(w, client))
+	if err != nil {
+		return fmt.Errorf("register discover responder: %w", err)
+	}
+	defer func() { _ = discSub.Close(context.Background()) }()
+
+	logger.Info("strava worker starting",
+		"instance", cfg.InstanceID,
+		"version", workerVersion,
+		"handlers", []string{subjFetchSource, subjParseBlob, subjBackfill, subjReconcile},
+	)
+
+	return w.Run(ctx)
+}
+
+// registerHandlers wires the usage sync, the job handlers and, when this
+// instance owns the webhook, the webhook handlers.
+func registerHandlers(w *workersdk.Worker, cfg workerConfig, client *stravaClient, logger *slog.Logger) {
 	// Sync the shared limiter to the budget Strava reports on every response —
 	// authoritative capacities instead of the configured guesses, anchored to
 	// Strava's real reset boundaries (quarter-hour / midnight UTC).
@@ -142,22 +161,4 @@ func run(cfg workerConfig, logger *slog.Logger) error {
 		w.WebhookVerify(handleWebhookVerify)
 		logger.Info("strava webhook handlers registered")
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	// Discovery responder (request/reply): the Core asks what's importable.
-	discSub, err := bus.RespondTo(ctx, subjDiscover, makeDiscoverHandler(w, client))
-	if err != nil {
-		return fmt.Errorf("register discover responder: %w", err)
-	}
-	defer func() { _ = discSub.Close(context.Background()) }()
-
-	logger.Info("strava worker starting",
-		"instance", cfg.InstanceID,
-		"version", workerVersion,
-		"handlers", []string{subjFetchSource, subjParseBlob, subjBackfill, subjReconcile},
-	)
-
-	return w.Run(ctx)
 }

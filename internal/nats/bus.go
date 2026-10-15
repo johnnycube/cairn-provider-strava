@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -405,7 +406,7 @@ func wrapMessage(jm jetstream.Msg) port.Message {
 	}
 	attempt := 0
 	if meta, err := jm.Metadata(); err == nil && meta != nil {
-		attempt = int(meta.NumDelivered)
+		attempt = int(min(meta.NumDelivered, math.MaxInt32))
 	}
 	return port.Message{
 		Subject:         jm.Subject(),
