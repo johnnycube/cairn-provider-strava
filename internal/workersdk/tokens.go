@@ -222,16 +222,18 @@ func (c *tokenCache) serverGet(ctx context.Context, accountID string) (port.Toke
 	if reply.Error != "" {
 		return port.TokenState{}, OAuthClientCreds{}, mapReplyError(reply.Error, reply.RetryAfter)
 	}
-	return port.TokenState{
+	state := port.TokenState{
 		AccessToken:  reply.AccessToken,
 		RefreshToken: reply.RefreshToken,
 		ExpiresAt:    reply.ExpiresAt,
 		Scope:        reply.Scope,
 		TokenType:    reply.TokenType,
-	}, OAuthClientCreds{
+	}
+	creds := OAuthClientCreds{
 		ClientID:     reply.ClientID,
 		ClientSecret: reply.ClientSecret,
-	}, nil
+	}
+	return state, creds, nil
 }
 
 // serverStore returns:
