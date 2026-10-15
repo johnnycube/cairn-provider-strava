@@ -25,7 +25,7 @@ The only contract it shares with the server is the proto messages (committed Go
 stubs under `proto/`) and the NATS subjects — the same wire contract the Python
 Garmin worker uses. There is no buf / proto-generation step at build time.
 
-CI and the Docker build use the shared `cairn-build-base` toolchain image by
+The Docker build uses the shared `cairn-build-base` toolchain image by
 default (pinned Go 1.26, consistent with cairn-core). That's only a *toolchain*
 dependency, and it's overridable — build with zero coupling to the core image
 via `docker build --build-arg BUILD_BASE=golang:1.26-alpine .`.
@@ -55,4 +55,10 @@ export CAIRN_WORKER_ENROLLMENT_TOKEN=...   # from POST /admin/worker-enrollments
 go run ./cmd/worker-strava
 ```
 
-Tests: `go test ./...`. Build image: `docker build -t cairn-provider-strava .`
+## Develop
+
+`make check` is the definition of green (lint, race tests, coverage floor,
+govulncheck, licenses, gitleaks, build, fleetlint); `make tools` installs the
+pinned tools and `make help` lists the targets. Build the image with
+`make image` (`CONTAINER=podman make image` without Docker). See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
