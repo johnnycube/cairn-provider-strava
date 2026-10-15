@@ -28,12 +28,13 @@ RUN go mod download
 COPY . .
 
 ARG VERSION=docker
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w" \
+# -trimpath and an empty build id keep the binary reproducible.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -buildid=" \
     -o /out/worker-strava ./cmd/worker-strava
 
 # ---- runtime stage --------------------------------------------------------
-FROM alpine:3.24
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 RUN apk add --no-cache ca-certificates && adduser -D -u 10002 worker
 
