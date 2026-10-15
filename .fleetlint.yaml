@@ -1,0 +1,15 @@
+# .fleetlint.yaml: https://github.com/fleetlint/fleetlint
+version: 1
+extends:
+  - fleetlint:recommended
+facts:
+  visibility: public   # as the forge reported it at init; update it if the repository changes hands
+# discovered: stacks=[go] forge=github visibility=public tier=1 (default) layout=single release=yes taskrunner=make container=none
+# Facts are re-detected on every run; pin one under `facts:` only when detection is wrong.
+overrides:
+  changelog/generator-configured:
+    enabled: false
+    reason: "CHANGELOG.md is curated by hand (Keep a Changelog); `make release` refuses a tag without its section"
+  release/changelog-in-release:
+    enabled: false
+    reason: "a v* tag publishes a signed container image; the GitHub release body is that tag's CHANGELOG.md section"
