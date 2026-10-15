@@ -53,8 +53,8 @@ type Bus struct {
 }
 
 // NewBusFromConn wraps an already-connected *nats.Conn into a Bus.
-// Workers build their own connection with the enrollment token + ephemeral
-// nkey before the auth-callout admits them. The Bus takes ownership of the
+// Workers build their own connection with the enrollment token before the
+// auth-callout admits them. The Bus takes ownership of the
 // connection — caller should not Close it directly; instead call Bus.Close
 // which drains + closes.
 //
