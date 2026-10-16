@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
   schedule:
     - cron: "23 6 * * 1"   # weekly: catches new vulnerabilities in unchanged code
 
@@ -48,3 +49,22 @@ jobs:
           make tools
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: make check
+
+  # Weekly mutation testing of the SDK package (job loop, retries, presence); too slow for every PR.
+  mutate:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Go tools (pinned in the Makefile)
+        run: |
+          make tools
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: make mutate
