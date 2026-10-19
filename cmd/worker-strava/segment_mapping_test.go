@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
+	cairnv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/v1"
 )
 
 func TestMapSegmentToProto(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
 )
 
 // archivedActivity is the self-describing blob format the worker stores in

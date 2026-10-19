@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
 )
 
 func TestBus_PublishSubscribeDedupAndClose(t *testing.T) {

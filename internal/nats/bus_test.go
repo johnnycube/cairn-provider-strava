@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
 )
 
 // startServer runs an embedded JetStream-enabled NATS server for one test.

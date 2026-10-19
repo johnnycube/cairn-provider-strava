@@ -71,5 +71,5 @@ adapter, the rate limiter and the Strava auth handler into one
 `make check` is the definition of green and runs in CI on every push and pull
 request. `.github/workflows/build.yml` gates on it, builds the image from the
 `Dockerfile` on the shared `cairn-build-base` toolchain, pushes
-`ghcr.io/johnnycube/cairn-provider-strava` from `main` and `v*` tags, attaches
+`ghcr.io/opencairn-org/cairn-provider-strava` from `main` and `v*` tags, attaches
 SBOM and provenance, signs it keyless with cosign and attests it.

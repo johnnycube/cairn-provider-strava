@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
+	cairnv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/v1"
 )
 
 func newTestClient(t *testing.T, h http.HandlerFunc) *stravaClient {

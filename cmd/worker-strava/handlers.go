@@ -14,10 +14,10 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	natsadapter "github.com/johnnycube/cairn-provider-strava/internal/nats"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
-	workerv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/worker/v1"
+	natsadapter "github.com/opencairn-org/cairn-provider-strava/internal/nats"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
+	workerv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
 // ---------------------------------------------------------------------------

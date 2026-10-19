@@ -23,8 +23,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/config"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/config"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
 )
 
 // Bus is the NATS-backed JobBus adapter. Wraps a single *nats.Conn and

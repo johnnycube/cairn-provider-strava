@@ -30,8 +30,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/capability"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
+	"github.com/opencairn-org/cairn-provider-strava/internal/capability"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
 )
 
 // stravaManifest declares Strava's per-data-type capabilities — the schema-

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
-	workerv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/worker/v1"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
+	workerv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
 // photoFetchSize is the max pixel dimension requested from Strava's photos

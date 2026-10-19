@@ -15,11 +15,11 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/inmem"
-	natsadapter "github.com/johnnycube/cairn-provider-strava/internal/nats"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
-	workerv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/worker/v1"
+	"github.com/opencairn-org/cairn-provider-strava/internal/inmem"
+	natsadapter "github.com/opencairn-org/cairn-provider-strava/internal/nats"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
+	workerv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
 // blobStore is a fake object store behind the presign responders.

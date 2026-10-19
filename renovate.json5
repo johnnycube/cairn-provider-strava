@@ -1,4 +1,4 @@
-// Renovate configuration for github.com/johnnycube/cairn-provider-strava
+// Renovate configuration for github.com/opencairn-org/cairn-provider-strava
 // Docs: https://docs.renovatebot.com/configuration-options/
 // Validate locally: npx --yes renovate-config-validator renovate.json5
 {

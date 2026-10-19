@@ -3,7 +3,7 @@
 ## Supported versions
 
 The latest release (the newest `v*` tag and its
-`ghcr.io/johnnycube/cairn-provider-strava` image). Older releases do not
+`ghcr.io/opencairn-org/cairn-provider-strava` image). Older releases do not
 receive fixes.
 
 ## Reporting a vulnerability
@@ -14,7 +14,7 @@ email to `security@johanneskueber.com`. You will get an acknowledgement within
 7 days and a fix or a decision within 30.
 
 Vulnerabilities in the Cairn server belong to
-[cairn-core](https://github.com/johnnycube/cairn-core); vulnerabilities in
+[cairn-core](https://github.com/opencairn-org/cairn-core); vulnerabilities in
 Strava's services go to Strava.
 
 ## Verifying images

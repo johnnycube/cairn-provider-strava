@@ -53,8 +53,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/capability"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/capability"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
 )
 
 // ---------------------------------------------------------------------------

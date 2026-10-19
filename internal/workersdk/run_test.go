@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/inmem"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/inmem"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
 )
 
 // fakeMsg records how the worker disposed of it.

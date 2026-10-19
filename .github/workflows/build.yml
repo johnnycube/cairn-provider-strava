@@ -4,24 +4,24 @@ name: Build & push strava-worker image
 # successful build, pushes it to the GitHub Container Registry tagged by git tag
 # and commit hash.
 #
-# Registry: ghcr.io/johnnycube/cairn-provider-strava
+# Registry: ghcr.io/opencairn-org/cairn-provider-strava
 # Auth: the built-in GITHUB_TOKEN (packages: write) — no extra secret needed.
 #
 # Supply chain: pushed images carry BuildKit SLSA provenance + SBOM
 # attestations, are signed keyless with cosign (Fulcio cert bound to this
 # workflow's OIDC identity, logged in Rekor), and get a GitHub provenance
 # attestation (verifiable via `gh attestation verify`). Verify with:
-#   cosign verify ghcr.io/johnnycube/cairn-provider-strava:<tag> \
+#   cosign verify ghcr.io/opencairn-org/cairn-provider-strava:<tag> \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
 #     --certificate-identity-regexp \
-#       '^https://github.com/johnnycube/cairn-provider-strava/\.github/workflows/build\.yml@.*'
+#       '^https://github.com/opencairn-org/cairn-provider-strava/\.github/workflows/build\.yml@.*'
 #
 # The Go proto stubs it imports (proto/) are committed, so there is no buf /
 # proto-generation step. The image's build stage uses the shared
 # cairn-build-base toolchain image (pinned Go 1.26, matching cairn-core) via
 # BUILD_BASE; it is overridable so the worker can still be built with zero
 # dependency on the core toolchain. It is pulled from the PUBLIC
-# ghcr.io/johnnycube/cairn-build-base:1 package.
+# ghcr.io/opencairn-org/cairn-build-base:1 package.
 #
 # Gate: `make check` (the same target check.yml runs) must pass first; a v*
 # tag must also be on main. Actions are pinned to commit SHAs (Renovate).
@@ -47,8 +47,8 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/johnnycube/cairn-provider-strava
-  BUILD_BASE: ghcr.io/johnnycube/cairn-build-base:1
+  IMAGE: ghcr.io/opencairn-org/cairn-provider-strava
+  BUILD_BASE: ghcr.io/opencairn-org/cairn-build-base:1
 
 jobs:
   # Gate: the full check, unprivileged. A release tag must also be on main.
