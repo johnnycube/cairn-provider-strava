@@ -6,9 +6,18 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-10-19
+
 ### Added
 - `make mutate`: gremlins mutation testing of `internal/workersdk` with an efficacy floor, run weekly in CI.
 - Code of conduct (Contributor Covenant) and an ADR log under `docs/adr`.
+
+### Changed
+- The project moved to the `opencairn-org` GitHub organization. The image is
+  published as `ghcr.io/opencairn-org/cairn-provider-strava`; the
+  `ghcr.io/johnnycube` namespace keeps the tags published so far as a frozen
+  mirror and receives no new versions, so image pins should move. The Go
+  module path is `github.com/opencairn-org/cairn-provider-strava`.
 
 ## [0.3.1] — 2026-10-15
 
@@ -134,5 +143,6 @@ write-back.
 
 Initial development (internal pre-release iterations v0.1.0–v0.1.5).
 
+[0.3.2]: https://github.com/opencairn-org/cairn-provider-strava/releases/tag/v0.3.2
 [0.2.1]: https://github.com/johnnycube/cairn-provider-strava/releases/tag/v0.2.1
 [0.2.0]: https://github.com/johnnycube/cairn-provider-strava/releases/tag/v0.2.0
