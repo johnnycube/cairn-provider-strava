@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
 )
 
 // tokenServer runs a fake Strava token endpoint and points the handler at it.

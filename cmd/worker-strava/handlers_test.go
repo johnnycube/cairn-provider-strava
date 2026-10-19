@@ -14,11 +14,11 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/inmem"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
-	cairnv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/v1"
-	workerv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/worker/v1"
+	"github.com/opencairn-org/cairn-provider-strava/internal/inmem"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
+	cairnv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/v1"
+	workerv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
 // harness is a worker on an in-memory bus talking to a fake Strava API.

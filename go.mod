@@ -1,4 +1,4 @@
-module github.com/johnnycube/cairn-provider-strava
+module github.com/opencairn-org/cairn-provider-strava
 
 go 1.26.0
 

@@ -17,9 +17,9 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/inmem"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
+	"github.com/opencairn-org/cairn-provider-strava/internal/inmem"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
 )
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

@@ -17,7 +17,7 @@
 set -euo pipefail
 
 CORE="${1:-../cairn-core}"
-MOD="github.com/johnnycube/cairn-provider-strava"
+MOD="github.com/opencairn-org/cairn-provider-strava"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 
 SRC_V1="$CORE/gen/proto/cairn/v1"
@@ -32,7 +32,7 @@ cp "$SRC_W"/*.pb.go  "$HERE/proto/cairn/worker/v1/"
 # Anchor on the closing quote so the rawDesc go_package (…/cairn/worker/v1;workerv1)
 # is never touched.
 sed -i \
-  "s#\"github.com/johnnycube/cairn-core/gen/proto/cairn/v1\"#\"$MOD/proto/cairn/v1\"#g" \
+  "s#\"github.com/opencairn-org/cairn-core/gen/proto/cairn/v1\"#\"$MOD/proto/cairn/v1\"#g" \
   "$HERE/proto/cairn/worker/v1/worker_service.pb.go"
 
 ( cd "$HERE" && go build ./... )

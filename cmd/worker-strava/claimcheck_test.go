@@ -12,10 +12,10 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/johnnycube/cairn-provider-strava/internal/inmem"
-	"github.com/johnnycube/cairn-provider-strava/internal/port"
-	"github.com/johnnycube/cairn-provider-strava/internal/workersdk"
-	workerv1 "github.com/johnnycube/cairn-provider-strava/proto/cairn/worker/v1"
+	"github.com/opencairn-org/cairn-provider-strava/internal/inmem"
+	"github.com/opencairn-org/cairn-provider-strava/internal/port"
+	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
+	workerv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
 func TestPublishResultViaBlob_UploadsBodyAndPublishesEnvelope(t *testing.T) {
