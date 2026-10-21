@@ -2,7 +2,7 @@ module github.com/opencairn-org/cairn-provider-strava
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/nats-io/jwt/v2 v2.8.2
