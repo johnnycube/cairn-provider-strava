@@ -6,6 +6,7 @@
 //	cairn.jobs.parse_blob.strava     — reparse a stored blob with new worker logic
 //	cairn.jobs.backfill.strava       — list-paginate then fan out fetch_source jobs
 //	cairn.jobs.reconcile.strava      — pull recent activities, enqueue fetch for missing
+//	cairn.jobs.import_gear.strava    — the athlete's bikes and shoes, retired included
 //
 // Required ENV (defaults in workersdk.Config docs):
 //
@@ -49,7 +50,7 @@ func stravaManifest() capability.Manifest {
 		capability.DataTypeSegmentEffort: {Read: true, Backfill: true},
 		capability.DataTypeSegment:       {Read: true, Backfill: true},
 		capability.DataTypePersonalBest:  {Read: true, Backfill: true},
-		capability.DataTypeGear:          {Read: true},
+		capability.DataTypeGear:          {Read: true, Backfill: true, Granularity: "per-account"},
 	}
 }
 
@@ -69,6 +70,7 @@ const (
 	subjParseBlob   = "cairn.jobs.parse_blob.strava"
 	subjBackfill    = "cairn.jobs.backfill.strava"
 	subjReconcile   = "cairn.jobs.reconcile.strava"
+	subjImportGear  = "cairn.jobs.import_gear.strava"
 	subjDiscover    = "cairn.discover.strava"
 )
 
@@ -128,7 +130,7 @@ func run(cfg workerConfig, logger *slog.Logger) error {
 	logger.Info("strava worker starting",
 		"instance", cfg.InstanceID,
 		"version", workerVersion,
-		"handlers", []string{subjFetchSource, subjParseBlob, subjBackfill, subjReconcile},
+		"handlers", []string{subjFetchSource, subjParseBlob, subjBackfill, subjReconcile, subjImportGear},
 	)
 
 	return w.Run(ctx)
@@ -150,6 +152,7 @@ func registerHandlers(w *workersdk.Worker, cfg workerConfig, client *stravaClien
 	w.Handle(subjParseBlob, makeParseBlobHandler(cfg))
 	w.Handle(subjBackfill, makeBackfillHandler(cfg, client))
 	w.Handle(subjReconcile, makeReconcileHandler(cfg, client))
+	w.Handle(subjImportGear, makeImportGearHandler(cfg, client))
 
 	// Webhook handlers — registered ONLY if CAIRN_STRAVA_WEBHOOK_VERIFY_TOKEN
 	// is set. Without it, this worker instance doesn't claim Strava's

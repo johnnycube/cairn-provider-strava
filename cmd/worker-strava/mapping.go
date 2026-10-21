@@ -53,7 +53,65 @@ func mapActivityToPayload(a *stravaActivity) *cairnv1.ActivitySourcePayload {
 		p.CustomSubtype = a.SportType
 	}
 	p.Laps = mapLapsToProto(a.Laps)
+	// Gear: the id resolves to the user's gear on the Core; the name is a
+	// display hint until the gear itself is imported.
+	p.GearExternalId = a.GearID
+	if a.Gear != nil {
+		p.GearName = gearDisplayName(a.Gear)
+	}
 	return p
+}
+
+// gearDisplayName: shoes often carry only a nickname.
+func gearDisplayName(g *stravaGearSummary) string {
+	if g.Name != "" {
+		return g.Name
+	}
+	return g.Nickname
+}
+
+// gearKindFromID maps Strava's id prefix: "b" = bike, "g" = shoes.
+func gearKindFromID(id string) cairnv1.GearKind {
+	switch {
+	case strings.HasPrefix(id, "b"):
+		return cairnv1.GearKind_GEAR_KIND_BIKE
+	case strings.HasPrefix(id, "g"):
+		return cairnv1.GearKind_GEAR_KIND_SHOE
+	}
+	return cairnv1.GearKind_GEAR_KIND_OTHER
+}
+
+// mapGearSummary maps a SummaryGear (activity or athlete list) to a GearImport.
+func mapGearSummary(g *stravaGearSummary) *workerv1.GearImport {
+	out := &workerv1.GearImport{
+		Kind:    gearKindFromID(g.ID),
+		Name:    gearDisplayName(g),
+		Retired: g.Retired,
+		Primary: g.Primary,
+	}
+	if g.Distance > 0 {
+		d := g.Distance
+		out.DistanceM = &d
+	}
+	return out
+}
+
+// mapGearDetail maps a DetailedGear (GET /gear/{id}) to a GearImport.
+func mapGearDetail(g *stravaDetailedGear) *workerv1.GearImport {
+	out := mapGearSummary(&g.stravaGearSummary)
+	out.Brand = g.BrandName
+	out.Model = g.ModelName
+	out.Description = g.Description
+	return out
+}
+
+// gearEvent wraps a gear import as the GEAR event that precedes the activity
+// referencing it (contract §5).
+func gearEvent(ref *workerv1.ExternalRef, imp *workerv1.GearImport) *workerv1.WorkerEvent {
+	return &workerv1.WorkerEvent{
+		Type:   workerv1.WorkerEventType_WORKER_EVENT_TYPE_GEAR,
+		Entity: &workerv1.WorkerEvent_Gear{Gear: &workerv1.ImportedGear{Ref: ref, Payload: imp}},
+	}
 }
 
 // mapLapsToProto maps Strava laps (manual/auto splits) to the typed payload.

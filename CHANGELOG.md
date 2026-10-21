@@ -6,6 +6,20 @@ to follow [Semantic Versioning](https://semver.org/). Dates are ISO-8601.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-21
+
+Needs cairn-core 0.4.0 or later (gear events and the `import_gear` job are
+new in the contract; the Core must be upgraded first).
+
+### Added
+- Gear. Every fetched activity carries its Strava `gear_id` and gear name,
+  preceded by a GEAR event built from the activity's gear summary, so the
+  Core can map the record to the user's gear (or ask them to). The
+  `import_gear` job answers with the athlete's full bike and shoe list,
+  retired included, with brand, model and description from `GET /gear/{id}`.
+  Archived activities carry the gear summary, so a reparse backfills gear
+  without API calls. The manifest now declares `Gear` with backfill.
+
 ## [0.3.2] — 2026-10-19
 
 ### Added
