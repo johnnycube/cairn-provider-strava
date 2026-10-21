@@ -19,6 +19,7 @@ import (
 	natsadapter "github.com/opencairn-org/cairn-provider-strava/internal/nats"
 	"github.com/opencairn-org/cairn-provider-strava/internal/port"
 	"github.com/opencairn-org/cairn-provider-strava/internal/workersdk"
+	cairnv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/v1"
 	workerv1 "github.com/opencairn-org/cairn-provider-strava/proto/cairn/worker/v1"
 )
 
@@ -110,8 +111,8 @@ func (s *blobStore) results(t *testing.T, h *harness, subject string) []*workerv
 
 // stravaAPI is a fake Strava API for one activity (id 42).
 type stravaAPI struct {
-	activity, streams, photos, segment7 http.HandlerFunc
-	photoURL                            string
+	activity, streams, photos, segment7, athlete http.HandlerFunc
+	photoURL                                     string
 }
 
 func (a *stravaAPI) handler(w http.ResponseWriter, r *http.Request) {
@@ -125,8 +126,18 @@ func (a *stravaAPI) handler(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/activities/42":
 		serve(a.activity, `{"id":42,"name":"Morning Ride","sport_type":"Ride","start_date":"2026-05-01T07:00:00Z","elapsed_time":3600,
+			"gear_id":"b1","gear":{"id":"b1","primary":true,"name":"Canyon","distance":1500.5},
 			"segment_efforts":[{"id":1,"segment":{"id":7}},{"id":2,"segment":{"id":7}},{"id":3,"segment":{"id":8}},{"id":4,"segment":{"id":9}}],
 			"photos":{"primary":{"unique_id":"p1","urls":{"600":"`+a.photoURL+`"}}}}`)
+	case "/athlete":
+		serve(a.athlete, `{"id":1,"bikes":[{"id":"b1","primary":true,"name":"Canyon","distance":1500.5},{"id":"b2","name":"Old","retired":true}],
+			"shoes":[{"id":"g1","primary":true,"nickname":"Pegasus"}]}`)
+	case "/gear/b1":
+		_, _ = io.WriteString(w, `{"id":"b1","name":"Canyon","brand_name":"Canyon","model_name":"Grail","description":"gravel","distance":1500.5}`)
+	case "/gear/b2":
+		_, _ = io.WriteString(w, `{"id":"b2","name":"Old","retired":true}`)
+	case "/gear/g1":
+		w.WriteHeader(http.StatusNotFound)
 	case "/activities/42/streams":
 		serve(a.streams, `{"time":{"data":[0,1,2]},"heartrate":{"data":[100,110,120]}}`)
 	case "/activities/42/photos":
@@ -159,6 +170,18 @@ func fetchJob(in fetchSourceJob) workersdk.Job {
 
 const resultsFetch = "cairn.results.fetch_source.strava"
 
+// activityEvent returns the result's ACTIVITY event (gear events precede it).
+func activityEvent(t *testing.T, res *workerv1.JobResult) *workerv1.ImportedActivity {
+	t.Helper()
+	for _, e := range res.GetEvents() {
+		if a := e.GetActivity(); a != nil {
+			return a
+		}
+	}
+	t.Fatalf("no activity event in %v", res.GetEvents())
+	return nil
+}
+
 func TestFetchSource_PublishesActivityAndSegments(t *testing.T) {
 	h, store := fetchHarness(t, &stravaAPI{})
 	handler := makeFetchSourceHandler(workerConfig{WorkerName: workerName}, h.client)
@@ -171,9 +194,21 @@ func TestFetchSource_PublishesActivityAndSegments(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("published %d results; want activity + segments", len(results))
 	}
-	act := results[0].GetEvents()[0].GetActivity()
+	// The gear event precedes the activity that references it.
+	evs := results[0].GetEvents()
+	if len(evs) != 2 || evs[0].GetGear() == nil {
+		t.Fatalf("events = %v; want GEAR then ACTIVITY", evs)
+	}
+	if g := evs[0].GetGear(); g.GetRef().GetExternalId() != "b1" || g.GetPayload().GetKind() != cairnv1.GearKind_GEAR_KIND_BIKE ||
+		g.GetPayload().GetName() != "Canyon" || !g.GetPayload().GetPrimary() || g.GetPayload().GetDistanceM() != 1500.5 {
+		t.Errorf("gear event = %v", g)
+	}
+	act := evs[1].GetActivity()
 	if act.GetRef().GetExternalId() != "42" || act.GetPayload().GetTitle() != "Morning Ride" {
 		t.Errorf("activity = %v", act.GetRef())
+	}
+	if act.GetPayload().GetGearExternalId() != "b1" || act.GetPayload().GetGearName() != "Canyon" {
+		t.Errorf("payload gear = %q/%q", act.GetPayload().GetGearExternalId(), act.GetPayload().GetGearName())
 	}
 	if act.GetRawBlobId() == "" || act.GetRawContentType() != "application/json" || act.GetRawSizeBytes() == 0 {
 		t.Errorf("archive not recorded: %q", act.GetRawBlobId())
@@ -292,7 +327,7 @@ func TestFetchSource_StreamOutcomes(t *testing.T) {
 	if err := makeFetchSourceHandler(workerConfig{}, h.client)(context.Background(), h.w, fetchJob(in)); err != nil {
 		t.Fatalf("streams 404: %v", err)
 	}
-	act := store.results(t, h, resultsFetch)[0].GetEvents()[0].GetActivity()
+	act := activityEvent(t, store.results(t, h, resultsFetch)[0])
 	if act.GetStream() != nil {
 		t.Error("stream must be empty when Strava has none")
 	}
@@ -377,7 +412,8 @@ func parseJob(t *testing.T, in parseBlobJob) workersdk.Job {
 
 func TestParseBlob(t *testing.T) {
 	h, store := fetchHarness(t, &stravaAPI{})
-	archive, _ := json.Marshal(archivedActivity{Version: 1, Activity: &stravaActivity{ID: 77, Name: "Archived", SportType: "Run"}})
+	archive, _ := json.Marshal(archivedActivity{Version: 1, Activity: &stravaActivity{ID: 77, Name: "Archived", SportType: "Run",
+		GearID: "g9", Gear: &stravaGearSummary{ID: "g9", Nickname: "Pegasus"}}})
 	store.put("raw1", archive)
 	store.put("empty", []byte(`{"version":1}`))
 	handler := makeParseBlobHandler(workerConfig{WorkerName: workerName})
@@ -390,8 +426,15 @@ func TestParseBlob(t *testing.T) {
 		t.Fatalf("fresh url: %v", err)
 	}
 	res := store.results(t, h, "cairn.results.parse_blob.strava")
-	if len(res) != 1 || res[0].GetEvents()[0].GetActivity().GetRef().GetExternalId() != "77" {
+	if len(res) != 1 || len(res[0].GetEvents()) != 2 || res[0].GetEvents()[1].GetActivity().GetRef().GetExternalId() != "77" {
 		t.Fatalf("results = %v", res)
+	}
+	// A reparse backfills gear from the archived summary: shoes, named by nickname.
+	if g := res[0].GetEvents()[0].GetGear(); g.GetRef().GetExternalId() != "g9" || g.GetPayload().GetKind() != cairnv1.GearKind_GEAR_KIND_SHOE || g.GetPayload().GetName() != "Pegasus" {
+		t.Errorf("reparse gear = %v", g)
+	}
+	if p := res[0].GetEvents()[1].GetActivity().GetPayload(); p.GetGearExternalId() != "g9" || p.GetGearName() != "Pegasus" {
+		t.Errorf("reparse payload gear = %q/%q", p.GetGearExternalId(), p.GetGearName())
 	}
 
 	// Expired URL: re-presign from the fallback handle.

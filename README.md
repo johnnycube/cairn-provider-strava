@@ -12,6 +12,7 @@ cairn.jobs.fetch_source.strava   pull one activity (backfill/webhook/reconcile)
 cairn.jobs.parse_blob.strava     reparse a stored blob with new worker logic
 cairn.jobs.backfill.strava       list-paginate, fan out fetch_source jobs
 cairn.jobs.reconcile.strava      pull recent activities, enqueue fetch for missing
+cairn.jobs.import_gear.strava    the athlete's bikes and shoes, retired included
 cairn.discover.strava            (request/reply) what's importable
 ```
 

@@ -405,10 +405,7 @@ func fetchSourceOnce(ctx context.Context, w *workersdk.Worker, cfg workerConfig,
 	// (Strava photo URLs are short-lived CDN links). Best-effort.
 	imported.Attachments = fetchActivityAttachments(ctx, w, client, token.AccessToken, bucket, in.UserID, in.ExtID, activity)
 
-	activityEvent := &workerv1.WorkerEvent{
-		Type:   workerv1.WorkerEventType_WORKER_EVENT_TYPE_ACTIVITY,
-		Entity: &workerv1.WorkerEvent_Activity{Activity: imported},
-	}
+	events := activityEvents(in, activity, imported)
 
 	var segs segmentBatch
 	if in.FetchStreams {
@@ -423,7 +420,7 @@ func fetchSourceOnce(ctx context.Context, w *workersdk.Worker, cfg workerConfig,
 	// delivery and must not be swallowed by the stream's dedup window
 	// (ingest dedups idempotently).
 	msgID := fmt.Sprintf("result:%s:d%d", in.JobID, job.DeliveryAttempt)
-	if err := publishResultViaBlob(ctx, w, job, msgID, newJobResult(cfg, activityEvent)); err != nil {
+	if err := publishResultViaBlob(ctx, w, job, msgID, newJobResult(cfg, events...)); err != nil {
 		return err
 	}
 
@@ -458,6 +455,20 @@ func fetchStreams(ctx context.Context, w *workersdk.Worker, cfg workerConfig, cl
 		return nil, mapStravaErr(ctx, w, cfg, job, in, err, "fetch_streams")
 	}
 	return streams, nil
+}
+
+// activityEvents is the activity's event list: the GEAR event for the gear
+// it was recorded with (from the DetailedActivity summary, no extra call)
+// first, so the Core can resolve the reference, then the activity itself.
+func activityEvents(in fetchSourceJob, activity *stravaActivity, imported *workerv1.ImportedActivity) []*workerv1.WorkerEvent {
+	var events []*workerv1.WorkerEvent
+	if activity.Gear != nil && activity.Gear.ID != "" {
+		events = append(events, gearEvent(externalRef(in, activity.Gear.ID), mapGearSummary(activity.Gear)))
+	}
+	return append(events, &workerv1.WorkerEvent{
+		Type:   workerv1.WorkerEventType_WORKER_EVENT_TYPE_ACTIVITY,
+		Entity: &workerv1.WorkerEvent_Activity{Activity: imported},
+	})
 }
 
 // externalRef builds the ref for one entity of the job's account.
@@ -696,22 +707,17 @@ func makeParseBlobHandler(cfg workerConfig) func(context.Context, *workersdk.Wor
 			extID = formatActivityID(arch.Activity.ID)
 		}
 
-		ev := &workerv1.WorkerEvent{
-			Type: workerv1.WorkerEventType_WORKER_EVENT_TYPE_ACTIVITY,
-			Entity: &workerv1.WorkerEvent_Activity{Activity: &workerv1.ImportedActivity{
-				Ref: &workerv1.ExternalRef{
-					UserId:            in.UserID,
-					Provider:          workerProvider,
-					ExternalAccountId: in.AccountID,
-					ExternalId:        extID,
-				},
-				Payload:   payload,
-				Stream:    protoStream,
-				RawBlobId: in.Blob.FallbackHandle, // keep the archive reference stable
-			}},
-		}
+		// Archived JSON carries the gear summary, so a reparse backfills gear
+		// on old imports without spending API budget.
+		ref := fetchSourceJob{UserID: in.UserID, AccountID: in.AccountID}
+		events := activityEvents(ref, arch.Activity, &workerv1.ImportedActivity{
+			Ref:       externalRef(ref, extID),
+			Payload:   payload,
+			Stream:    protoStream,
+			RawBlobId: in.Blob.FallbackHandle, // keep the archive reference stable
+		})
 
-		return publishResultViaBlob(ctx, w, job, "result:"+in.JobID, newJobResult(cfg, ev))
+		return publishResultViaBlob(ctx, w, job, "result:"+in.JobID, newJobResult(cfg, events...))
 	}
 }
 

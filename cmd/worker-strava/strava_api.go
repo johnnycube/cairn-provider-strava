@@ -150,7 +150,10 @@ type stravaActivity struct {
 	Kilojoules           float64 `json:"kilojoules"`
 	Commute              bool    `json:"commute"`
 	WorkoutType          *int    `json:"workout_type"`
-	Athlete              struct {
+	// Gear: the id on every activity, the summary only on DetailedActivity.
+	GearID  string             `json:"gear_id"`
+	Gear    *stravaGearSummary `json:"gear"`
+	Athlete struct {
 		ID int64 `json:"id"`
 	} `json:"athlete"`
 	SegmentEfforts []stravaSegmentEffort `json:"segment_efforts"`
@@ -165,6 +168,31 @@ type stravaActivity struct {
 
 // stravaLap mirrors a DetailedActivity.laps[] entry — the provider's split
 // segmentation (manual or auto laps).
+// stravaGearSummary is Strava's SummaryGear (on DetailedActivity.gear and the
+// athlete's bikes/shoes lists). Ids are prefixed: "b" = bike, "g" = shoes.
+type stravaGearSummary struct {
+	ID       string  `json:"id"`
+	Primary  bool    `json:"primary"`
+	Name     string  `json:"name"`
+	Nickname string  `json:"nickname"`
+	Retired  bool    `json:"retired"`
+	Distance float64 `json:"distance"`
+}
+
+// stravaDetailedGear is GET /gear/{id}.
+type stravaDetailedGear struct {
+	stravaGearSummary
+	BrandName   string `json:"brand_name"`
+	ModelName   string `json:"model_name"`
+	Description string `json:"description"`
+}
+
+// stravaAthleteGear is the gear part of GET /athlete (DetailedAthlete).
+type stravaAthleteGear struct {
+	Bikes []stravaGearSummary `json:"bikes"`
+	Shoes []stravaGearSummary `json:"shoes"`
+}
+
 type stravaLap struct {
 	LapIndex           int     `json:"lap_index"`
 	Name               string  `json:"name"`
@@ -249,6 +277,37 @@ func (c *stravaClient) GetActivity(ctx context.Context, accessToken, activityID 
 		return nil, fmt.Errorf("decode activity: %w", err)
 	}
 	return &act, nil
+}
+
+// GetAthleteGear fetches the authenticated athlete's bikes and shoes (GET
+// /athlete). Retired gear is included.
+func (c *stravaClient) GetAthleteGear(ctx context.Context, accessToken string) (*stravaAthleteGear, error) {
+	resp, err := c.get(ctx, accessToken, "/athlete")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var out stravaAthleteGear
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode athlete: %w", err)
+	}
+	return &out, nil
+}
+
+// GetGear fetches one gear's detail (brand, model, description) via GET /gear/{id}.
+func (c *stravaClient) GetGear(ctx context.Context, accessToken, gearID string) (*stravaDetailedGear, error) {
+	resp, err := c.get(ctx, accessToken, "/gear/"+gearID)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var out stravaDetailedGear
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode gear: %w", err)
+	}
+	return &out, nil
 }
 
 // GetSegment fetches one segment's detail (including the encoded polyline) via
